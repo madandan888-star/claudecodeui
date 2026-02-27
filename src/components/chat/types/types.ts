@@ -113,6 +113,7 @@ export interface ChatInterfaceProps {
   autoScrollToBottom?: boolean;
   sendByCtrlEnter?: boolean;
   externalMessageUpdate?: number;
+  isConnected?: boolean;
   onTaskClick?: (...args: unknown[]) => void;
   onShowAllTasks?: (() => void) | null;
 }

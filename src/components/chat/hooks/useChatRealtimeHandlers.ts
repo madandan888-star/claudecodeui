@@ -43,6 +43,8 @@ interface UseChatRealtimeHandlersArgs {
   pendingViewSessionRef: MutableRefObject<PendingViewSession | null>;
   streamBufferRef: MutableRefObject<string>;
   streamTimerRef: MutableRefObject<number | null>;
+  thinkingBufferRef: MutableRefObject<string>;
+  thinkingTimerRef: MutableRefObject<number | null>;
   onSessionInactive?: (sessionId?: string | null) => void;
   onSessionProcessing?: (sessionId?: string | null) => void;
   onSessionNotProcessing?: (sessionId?: string | null) => void;
@@ -54,6 +56,7 @@ const appendStreamingChunk = (
   setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>,
   chunk: string,
   newline = false,
+  isThinking = false,
 ) => {
   if (!chunk) {
     return;
@@ -61,31 +64,66 @@ const appendStreamingChunk = (
 
   setChatMessages((previous) => {
     const updated = [...previous];
-    const lastIndex = updated.length - 1;
-    const last = updated[lastIndex];
-    if (last && last.type === 'assistant' && !last.isToolUse && last.isStreaming) {
+    // Find the last streaming message that matches the thinking/text mode
+    let targetIndex = -1;
+    for (let i = updated.length - 1; i >= 0; i--) {
+      const msg = updated[i];
+      if (msg && msg.type === 'assistant' && !msg.isToolUse && msg.isStreaming) {
+        if (isThinking && msg.isThinking) {
+          targetIndex = i;
+          break;
+        }
+        if (!isThinking && !msg.isThinking) {
+          targetIndex = i;
+          break;
+        }
+      }
+      // Stop searching if we hit a non-streaming message
+      if (msg && msg.type === 'assistant' && !msg.isStreaming) {
+        break;
+      }
+    }
+
+    if (targetIndex >= 0) {
+      const target = updated[targetIndex];
       const nextContent = newline
-        ? last.content
-          ? `${last.content}\n${chunk}`
+        ? target.content
+          ? `${target.content}\n${chunk}`
           : chunk
-        : `${last.content || ''}${chunk}`;
-      // Clone the message instead of mutating in place so React can reliably detect state updates.
-      updated[lastIndex] = { ...last, content: nextContent };
+        : `${target.content || ''}${chunk}`;
+      updated[targetIndex] = { ...target, content: nextContent };
     } else {
-      updated.push({ type: 'assistant', content: chunk, timestamp: new Date(), isStreaming: true });
+      updated.push({
+        type: 'assistant',
+        content: chunk,
+        timestamp: new Date(),
+        isStreaming: true,
+        ...(isThinking ? { isThinking: true } : {}),
+      });
     }
     return updated;
   });
 };
 
-const finalizeStreamingMessage = (setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>) => {
+const finalizeStreamingMessage = (setChatMessages: Dispatch<SetStateAction<ChatMessage[]>>, isThinking = false) => {
   setChatMessages((previous) => {
     const updated = [...previous];
-    const lastIndex = updated.length - 1;
-    const last = updated[lastIndex];
-    if (last && last.type === 'assistant' && last.isStreaming) {
-      // Clone the message instead of mutating in place so React can reliably detect state updates.
-      updated[lastIndex] = { ...last, isStreaming: false };
+    // Find the last streaming message matching the thinking/text mode
+    for (let i = updated.length - 1; i >= 0; i--) {
+      const msg = updated[i];
+      if (msg && msg.type === 'assistant' && msg.isStreaming) {
+        if (isThinking && msg.isThinking) {
+          updated[i] = { ...msg, isStreaming: false };
+          break;
+        }
+        if (!isThinking && !msg.isThinking) {
+          updated[i] = { ...msg, isStreaming: false };
+          break;
+        }
+      }
+      if (msg && msg.type === 'assistant' && !msg.isStreaming) {
+        break;
+      }
     }
     return updated;
   });
@@ -108,6 +146,8 @@ export function useChatRealtimeHandlers({
   pendingViewSessionRef,
   streamBufferRef,
   streamTimerRef,
+  thinkingBufferRef,
+  thinkingTimerRef,
   onSessionInactive,
   onSessionProcessing,
   onSessionNotProcessing,
@@ -115,6 +155,9 @@ export function useChatRealtimeHandlers({
   onNavigateToSession,
 }: UseChatRealtimeHandlersArgs) {
   const lastProcessedMessageRef = useRef<LatestChatMessage | null>(null);
+  // Track whether we've been streaming content via stream_event deltas,
+  // so we can skip the duplicate final assistant message from the SDK.
+  const streamedViaEventsRef = useRef(false);
 
   useEffect(() => {
     if (!latestMessage) {
@@ -261,6 +304,92 @@ export function useChatRealtimeHandlers({
         break;
 
       case 'claude-response': {
+        // Handle raw Anthropic API stream events forwarded via includePartialMessages
+        if (messageData && typeof messageData === 'object' && messageData.type === 'stream_event' && messageData.event) {
+          const evt = messageData.event;
+
+          // Thinking block start -> create a new thinking streaming message
+          if (evt.type === 'content_block_start' && evt.content_block?.type === 'thinking') {
+            streamedViaEventsRef.current = true;
+            appendStreamingChunk(setChatMessages, '', false, true);
+            return;
+          }
+
+          // Text block start -> mark that we're streaming via events
+          if (evt.type === 'content_block_start' && evt.content_block?.type === 'text') {
+            streamedViaEventsRef.current = true;
+            return;
+          }
+
+          // Thinking delta -> buffer and flush to streaming thinking message
+          if (evt.type === 'content_block_delta' && evt.delta?.type === 'thinking_delta' && evt.delta?.thinking) {
+            streamedViaEventsRef.current = true;
+            thinkingBufferRef.current += evt.delta.thinking;
+            if (!thinkingTimerRef.current) {
+              thinkingTimerRef.current = window.setTimeout(() => {
+                const chunk = thinkingBufferRef.current;
+                thinkingBufferRef.current = '';
+                thinkingTimerRef.current = null;
+                appendStreamingChunk(setChatMessages, chunk, false, true);
+              }, 100);
+            }
+            return;
+          }
+
+          // Text delta -> buffer and flush to streaming text message (same as existing)
+          if (evt.type === 'content_block_delta' && evt.delta?.type === 'text_delta' && evt.delta?.text) {
+            streamedViaEventsRef.current = true;
+            const decodedText = decodeHtmlEntities(evt.delta.text);
+            streamBufferRef.current += decodedText;
+            if (!streamTimerRef.current) {
+              streamTimerRef.current = window.setTimeout(() => {
+                const chunk = streamBufferRef.current;
+                streamBufferRef.current = '';
+                streamTimerRef.current = null;
+                appendStreamingChunk(setChatMessages, chunk, false, false);
+              }, 100);
+            }
+            return;
+          }
+
+          // Block stop -> flush any pending buffer and always finalize
+          if (evt.type === 'content_block_stop') {
+            // Flush thinking buffer if pending
+            if (thinkingTimerRef.current) {
+              clearTimeout(thinkingTimerRef.current);
+              thinkingTimerRef.current = null;
+            }
+            if (thinkingBufferRef.current) {
+              appendStreamingChunk(setChatMessages, thinkingBufferRef.current, false, true);
+              thinkingBufferRef.current = '';
+            }
+            // Always finalize thinking streaming message (even if buffer was already flushed by timer)
+            finalizeStreamingMessage(setChatMessages, true);
+
+            // Flush text buffer if pending
+            if (streamTimerRef.current) {
+              clearTimeout(streamTimerRef.current);
+              streamTimerRef.current = null;
+            }
+            if (streamBufferRef.current) {
+              appendStreamingChunk(setChatMessages, streamBufferRef.current, false, false);
+              streamBufferRef.current = '';
+            }
+            // Always finalize text streaming message
+            finalizeStreamingMessage(setChatMessages, false);
+            return;
+          }
+
+          // Reset tracking flag on message_stop (end of full API response)
+          if (evt.type === 'message_stop') {
+            streamedViaEventsRef.current = false;
+            return;
+          }
+
+          // Ignore other stream events
+          return;
+        }
+
         if (messageData && typeof messageData === 'object' && messageData.type) {
           if (messageData.type === 'content_block_delta' && messageData.delta?.text) {
             const decodedText = decodeHtmlEntities(messageData.delta.text);
@@ -393,7 +522,8 @@ export function useChatRealtimeHandlers({
               return;
             }
 
-            if (part.type === 'text' && part.text?.trim()) {
+            // Skip text and thinking parts that were already streamed via stream_event deltas
+            if (part.type === 'text' && part.text?.trim() && !streamedViaEventsRef.current) {
               let content = decodeHtmlEntities(part.text);
               content = formatUsageLimitText(content);
               setChatMessages((previous) => [
@@ -406,17 +536,22 @@ export function useChatRealtimeHandlers({
               ]);
             }
           });
+          // Reset the flag after processing the complete assistant message
+          streamedViaEventsRef.current = false;
         } else if (structuredMessageData && typeof structuredMessageData.content === 'string' && structuredMessageData.content.trim()) {
-          let content = decodeHtmlEntities(structuredMessageData.content);
-          content = formatUsageLimitText(content);
-          setChatMessages((previous) => [
-            ...previous,
-            {
-              type: 'assistant',
-              content,
-              timestamp: new Date(),
-            },
-          ]);
+          if (!streamedViaEventsRef.current) {
+            let content = decodeHtmlEntities(structuredMessageData.content);
+            content = formatUsageLimitText(content);
+            setChatMessages((previous) => [
+              ...previous,
+              {
+                type: 'assistant',
+                content,
+                timestamp: new Date(),
+              },
+            ]);
+          }
+          streamedViaEventsRef.current = false;
         }
 
         if (structuredMessageData?.role === 'user' && Array.isArray(structuredMessageData.content)) {
@@ -558,7 +693,12 @@ export function useChatRealtimeHandlers({
         );
         break;
 
-      case 'claude-error':
+      case 'claude-error': {
+        clearLoadingIndicators();
+        const pendingSessionId = sessionStorage.getItem('pendingSessionId');
+        const errorSessionId = latestMessage.sessionId || currentSessionId || pendingSessionId;
+        markSessionsAsCompleted(errorSessionId, currentSessionId, selectedSession?.id, pendingSessionId);
+        setPendingPermissionRequests([]);
         setChatMessages((previous) => [
           ...previous,
           {
@@ -568,6 +708,7 @@ export function useChatRealtimeHandlers({
           },
         ]);
         break;
+      }
 
       case 'cursor-system':
         try {
@@ -623,7 +764,11 @@ export function useChatRealtimeHandlers({
         ]);
         break;
 
-      case 'cursor-error':
+      case 'cursor-error': {
+        clearLoadingIndicators();
+        const cursorErrorSessionId = latestMessage.sessionId || currentSessionId;
+        markSessionsAsCompleted(cursorErrorSessionId, currentSessionId, selectedSession?.id);
+        setPendingPermissionRequests([]);
         setChatMessages((previous) => [
           ...previous,
           {
@@ -633,6 +778,7 @@ export function useChatRealtimeHandlers({
           },
         ]);
         break;
+      }
 
       case 'cursor-result': {
         const cursorCompletedSessionId = latestMessage.sessionId || currentSessionId;
@@ -923,34 +1069,24 @@ export function useChatRealtimeHandlers({
         const pendingSessionId =
           typeof window !== 'undefined' ? sessionStorage.getItem('pendingSessionId') : null;
         const abortedSessionId = latestMessage.sessionId || currentSessionId;
-        const abortSucceeded = latestMessage.success !== false;
 
-        if (abortSucceeded) {
-          clearLoadingIndicators();
-          markSessionsAsCompleted(abortedSessionId, currentSessionId, selectedSession?.id, pendingSessionId);
-          if (pendingSessionId && (!abortedSessionId || pendingSessionId === abortedSessionId)) {
-            sessionStorage.removeItem('pendingSessionId');
-          }
-
-          setPendingPermissionRequests([]);
-          setChatMessages((previous) => [
-            ...previous,
-            {
-              type: 'assistant',
-              content: 'Session interrupted by user.',
-              timestamp: new Date(),
-            },
-          ]);
-        } else {
-          setChatMessages((previous) => [
-            ...previous,
-            {
-              type: 'error',
-              content: 'Stop request failed. The session is still running.',
-              timestamp: new Date(),
-            },
-          ]);
+        // Always clear loading indicators on abort - even if the server reports
+        // failure, the user wants to stop and shouldn't be stuck in loading state.
+        clearLoadingIndicators();
+        markSessionsAsCompleted(abortedSessionId, currentSessionId, selectedSession?.id, pendingSessionId);
+        if (pendingSessionId && (!abortedSessionId || pendingSessionId === abortedSessionId)) {
+          sessionStorage.removeItem('pendingSessionId');
         }
+        setPendingPermissionRequests([]);
+
+        setChatMessages((previous) => [
+          ...previous,
+          {
+            type: 'assistant',
+            content: 'Session interrupted by user.',
+            timestamp: new Date(),
+          },
+        ]);
         break;
       }
 

@@ -1,5 +1,5 @@
 import CommandMenu from './CommandMenu';
-import ClaudeStatus from './ClaudeStatus';
+
 import MicButton from '../../../mic-button/view/MicButton';
 import ImageAttachment from './ImageAttachment';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
@@ -170,17 +170,6 @@ export default function ChatComposer({
 
   return (
     <div className={`p-2 sm:p-4 md:p-4 flex-shrink-0 pb-2 sm:pb-4 md:pb-6 ${mobileFloatingClass}`}>
-      {!hasQuestionPanel && (
-        <div className="flex-1">
-          <ClaudeStatus
-            status={claudeStatus}
-            isLoading={isLoading}
-            onAbort={onAbortSession}
-            provider={provider}
-          />
-        </div>
-      )}
-
       <div className="max-w-4xl mx-auto mb-3">
         <PermissionRequestsBanner
           pendingPermissionRequests={pendingPermissionRequests}

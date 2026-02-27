@@ -40,6 +40,7 @@ export type MainContentProps = {
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   latestMessage: unknown;
+  isConnected?: boolean;
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;

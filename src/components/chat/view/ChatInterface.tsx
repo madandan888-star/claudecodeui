@@ -22,6 +22,7 @@ function ChatInterface({
   ws,
   sendMessage,
   latestMessage,
+  isConnected,
   onFileOpen,
   onInputFocusChange,
   onSessionActive,
@@ -45,6 +46,8 @@ function ChatInterface({
 
   const streamBufferRef = useRef('');
   const streamTimerRef = useRef<number | null>(null);
+  const thinkingBufferRef = useRef('');
+  const thinkingTimerRef = useRef<number | null>(null);
   const pendingViewSessionRef = useRef<PendingViewSession | null>(null);
 
   const resetStreamingState = useCallback(() => {
@@ -53,6 +56,11 @@ function ChatInterface({
       streamTimerRef.current = null;
     }
     streamBufferRef.current = '';
+    if (thinkingTimerRef.current) {
+      clearTimeout(thinkingTimerRef.current);
+      thinkingTimerRef.current = null;
+    }
+    thinkingBufferRef.current = '';
   }, []);
 
   const {
@@ -118,6 +126,7 @@ function ChatInterface({
     processingSessions,
     resetStreamingState,
     pendingViewSessionRef,
+    isConnected,
   });
 
   const {
@@ -212,6 +221,8 @@ function ChatInterface({
     pendingViewSessionRef,
     streamBufferRef,
     streamTimerRef,
+    thinkingBufferRef,
+    thinkingTimerRef,
     onSessionInactive,
     onSessionProcessing,
     onSessionNotProcessing,
@@ -229,6 +240,12 @@ function ChatInterface({
         return;
       }
 
+      // Don't abort session when permission panels (e.g. AskUserQuestion) are active;
+      // let the panel handle Escape (skip) instead of aborting the entire session.
+      if (pendingPermissionRequests.length > 0) {
+        return;
+      }
+
       event.preventDefault();
       handleAbortSession();
     };
@@ -237,7 +254,7 @@ function ChatInterface({
     return () => {
       document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
     };
-  }, [canAbortSession, handleAbortSession, isLoading]);
+  }, [canAbortSession, handleAbortSession, isLoading, pendingPermissionRequests]);
 
   useEffect(() => {
     return () => {
@@ -312,6 +329,9 @@ function ChatInterface({
           showThinking={showThinking}
           selectedProject={selectedProject}
           isLoading={isLoading}
+          isInputFocused={isInputFocused}
+          claudeStatus={claudeStatus}
+          onAbortSession={handleAbortSession}
         />
 
         <ChatComposer

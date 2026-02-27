@@ -37,6 +37,7 @@ function MainContent({
   ws,
   sendMessage,
   latestMessage,
+  isConnected,
   isMobile,
   onMenuClick,
   isLoading,
@@ -116,6 +117,7 @@ function MainContent({
                 ws={ws}
                 sendMessage={sendMessage}
                 latestMessage={latestMessage}
+                isConnected={isConnected}
                 onFileOpen={handleFileOpen}
                 onInputFocusChange={onInputFocusChange}
                 onSessionActive={onSessionActive}

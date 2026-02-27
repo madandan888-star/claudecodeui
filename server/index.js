@@ -45,7 +45,7 @@ import fetch from 'node-fetch';
 import mime from 'mime-types';
 
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache } from './projects.js';
-import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval } from './claude-sdk.js';
+import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, rebindSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
 import gitRoutes from './routes/git.js';
@@ -1016,8 +1016,13 @@ function handleChatConnection(ws) {
                 } else {
                     // Use Claude Agents SDK
                     isActive = isClaudeSDKSessionActive(sessionId);
+                    // Rebind writer so the running query streams to this new connection
+                    if (isActive) {
+                        rebindSessionWriter(sessionId, writer);
+                    }
                 }
 
+                console.log(`[DEBUG] check-session-status: sessionId=${sessionId}, provider=${provider}, isActive=${isActive}`);
                 writer.send({
                     type: 'session-status',
                     sessionId,

@@ -16,7 +16,7 @@ export default function AppContent() {
   const { sessionId } = useParams<{ sessionId?: string }>();
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
-  const { ws, sendMessage, latestMessage } = useWebSocket();
+  const { ws, sendMessage, latestMessage, isConnected } = useWebSocket();
 
   const {
     activeSessions,
@@ -115,6 +115,7 @@ export default function AppContent() {
           ws={ws}
           sendMessage={sendMessage}
           latestMessage={latestMessage}
+          isConnected={isConnected}
           isMobile={isMobile}
           onMenuClick={() => setSidebarOpen(true)}
           isLoading={isLoadingProjects}

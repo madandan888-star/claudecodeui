@@ -51,6 +51,9 @@ interface ChatMessagesPaneProps {
   showThinking?: boolean;
   selectedProject: Project;
   isLoading: boolean;
+  isInputFocused?: boolean;
+  claudeStatus?: { text?: string; tokens?: number; can_interrupt?: boolean } | null;
+  onAbortSession?: () => void;
 }
 
 export default function ChatMessagesPane({
@@ -95,6 +98,9 @@ export default function ChatMessagesPane({
   showThinking,
   selectedProject,
   isLoading,
+  isInputFocused,
+  claudeStatus,
+  onAbortSession,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
@@ -130,7 +136,7 @@ export default function ChatMessagesPane({
       ref={scrollContainerRef}
       onWheel={onWheel}
       onTouchMove={onTouchMove}
-      className="flex-1 overflow-y-auto overflow-x-hidden px-0 py-3 sm:p-4 space-y-3 sm:space-y-4 relative"
+      className={`flex-1 overflow-y-auto overflow-x-hidden px-0 py-3 sm:p-4 space-y-3 sm:space-y-4 relative ${isInputFocused ? 'max-sm:pb-[160px]' : ''}`}
     >
       {isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="text-center text-gray-500 dark:text-gray-400 mt-8">
@@ -258,7 +264,7 @@ export default function ChatMessagesPane({
         </>
       )}
 
-      {isLoading && <AssistantThinkingIndicator selectedProvider={provider} />}
+      {isLoading && <AssistantThinkingIndicator selectedProvider={provider} status={claudeStatus} onAbort={onAbortSession} />}
     </div>
   );
 }

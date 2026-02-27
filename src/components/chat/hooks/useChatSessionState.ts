@@ -30,6 +30,7 @@ interface UseChatSessionStateArgs {
   processingSessions?: Set<string>;
   resetStreamingState: () => void;
   pendingViewSessionRef: MutableRefObject<PendingViewSession | null>;
+  isConnected?: boolean;
 }
 
 interface ScrollRestoreState {
@@ -47,6 +48,7 @@ export function useChatSessionState({
   processingSessions,
   resetStreamingState,
   pendingViewSessionRef,
+  isConnected,
 }: UseChatSessionStateArgs) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => {
     if (typeof window !== 'undefined' && selectedProject) {
@@ -93,6 +95,44 @@ export function useChatSessionState({
   const scrollPositionRef = useRef({ height: 0, top: 0 });
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // When WebSocket reconnects while loading, check if the session is still processing
+  const prevConnectedRef = useRef(isConnected);
+  useEffect(() => {
+    const wasDisconnected = prevConnectedRef.current === false;
+    prevConnectedRef.current = isConnected;
+
+    if (wasDisconnected && isConnected && isLoading && ws) {
+      const sessionId = currentSessionId || selectedSession?.id;
+      if (sessionId) {
+        sendMessage({
+          type: 'check-session-status',
+          sessionId,
+        });
+      }
+    }
+  }, [isConnected, isLoading, ws, currentSessionId, selectedSession, sendMessage]);
+
+  // Safety net: if isLoading has been true for 30s without updates, re-check session status.
+  // This handles cases where claude-complete was lost (e.g., WebSocket reconnect race condition).
+  useEffect(() => {
+    if (!isLoading || !ws || !isConnected) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      const sessionId = currentSessionId || selectedSession?.id;
+      if (sessionId && isLoading) {
+        console.log('[Safety] isLoading stuck for 30s, re-checking session status:', sessionId);
+        sendMessage({
+          type: 'check-session-status',
+          sessionId,
+        });
+      }
+    }, 30000);
+
+    return () => clearTimeout(timer);
+  }, [isLoading, ws, isConnected, currentSessionId, selectedSession?.id, sendMessage, claudeStatus]);
 
   const createDiff = useMemo<DiffCalculator>(() => createCachedDiffCalculator(), []);
 
@@ -364,6 +404,15 @@ export function useChatSessionState({
           setHasMoreMessages(false);
           setTotalMessages(0);
 
+          if (ws) {
+            sendMessage({
+              type: 'check-session-status',
+              sessionId: selectedSession.id,
+              provider,
+            });
+          }
+        } else {
+          // Initial page load (currentSessionId === selectedSession.id): still check processing status
           if (ws) {
             sendMessage({
               type: 'check-session-status',

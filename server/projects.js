@@ -350,6 +350,20 @@ async function extractProjectDirectory(projectName) {
           }
         }
         
+        // When multiple cwds exist, check if they share a common ancestor.
+        // If a shorter path is a parent of the selected path and has significant usage,
+        // prefer the parent (project root) over the subdirectory.
+        const allCwds = Array.from(cwdCounts.keys());
+        for (const cwd of allCwds) {
+          if (cwd.length < extractedPath.length && extractedPath.startsWith(cwd + '/')) {
+            // cwd is a parent of extractedPath — prefer it if it has reasonable usage
+            const parentCount = cwdCounts.get(cwd) || 0;
+            if (parentCount >= maxCount * 0.1) {
+              extractedPath = cwd;
+            }
+          }
+        }
+
         // Fallback (shouldn't reach here)
         if (!extractedPath) {
           extractedPath = latestCwd || projectName.replace(/-/g, '/');

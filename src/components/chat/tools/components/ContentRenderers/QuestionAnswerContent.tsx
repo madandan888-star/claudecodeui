@@ -9,13 +9,16 @@ interface QuestionAnswerContentProps {
 
 // Exception to the stateless ContentRenderer pattern: multi-question navigation requires local state.
 export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
-  questions,
+  questions: rawQuestions,
   answers,
   className = '',
 }) => {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
-  if (!questions || questions.length === 0) {
+  // Defensive: ensure questions is always an array
+  const questions = Array.isArray(rawQuestions) ? rawQuestions : [];
+
+  if (questions.length === 0) {
     return null;
   }
 
@@ -25,6 +28,8 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
   return (
     <div className={`space-y-2 ${className}`}>
       {questions.map((q, idx) => {
+        // Defensive: ensure options is always an array
+        const options = Array.isArray(q.options) ? q.options : [];
         const answer = answers?.[q.question];
         const answerLabels = answer ? answer.split(', ') : [];
         const skipped = !answer;
@@ -74,7 +79,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
                 {!isExpanded && answerLabels.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1.5">
                     {answerLabels.map((lbl) => {
-                      const isCustom = !q.options.some(o => o.label === lbl);
+                      const isCustom = !options.some(o => o.label === lbl);
                       return (
                         <span
                           key={lbl}
@@ -110,7 +115,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
             {isExpanded && (
               <div className="px-3 pb-2.5 pt-0.5 border-t border-gray-100 dark:border-gray-700/40">
                 <div className="space-y-1 ml-6.5">
-                  {q.options.map((opt) => {
+                  {options.map((opt) => {
                     const wasSelected = answerLabels.includes(opt.label);
                     return (
                       <div
@@ -148,7 +153,7 @@ export const QuestionAnswerContent: React.FC<QuestionAnswerContentProps> = ({
                     );
                   })}
 
-                  {answerLabels.filter(lbl => !q.options.some(o => o.label === lbl)).map(lbl => (
+                  {answerLabels.filter(lbl => !options.some(o => o.label === lbl)).map(lbl => (
                     <div
                       key={lbl}
                       className="flex items-start gap-2 px-2.5 py-1.5 rounded-lg text-[12px] bg-blue-50/80 dark:bg-blue-900/20 border border-blue-200/60 dark:border-blue-800/40"

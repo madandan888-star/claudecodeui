@@ -21,6 +21,8 @@ import { CLAUDE_MODELS } from '../shared/modelConstants.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
+// Store permission request metadata so we can re-send on reconnect
+const pendingPermissionMeta = new Map();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
@@ -50,6 +52,7 @@ function waitForToolApproval(requestId, options = {}) {
 
     const cleanup = () => {
       pendingToolApprovals.delete(requestId);
+      pendingPermissionMeta.delete(requestId);
       if (timeout) clearTimeout(timeout);
       if (signal && abortHandler) {
         signal.removeEventListener('abort', abortHandler);
@@ -179,6 +182,10 @@ function mapCliOptionsToSDK(options = {}) {
 
   sdkOptions.disallowedTools = settings.disallowedTools || [];
 
+  // Enable partial messages so raw Anthropic API stream events (including thinking deltas)
+  // are forwarded to the frontend for real-time streaming of thinking content.
+  sdkOptions.includePartialMessages = true;
+
   // Map model (default to sonnet)
   // Valid models: sonnet, opus, haiku, opusplan, sonnet[1m]
   sdkOptions.model = options.model || CLAUDE_MODELS.DEFAULT;
@@ -193,6 +200,12 @@ function mapCliOptionsToSDK(options = {}) {
   // Map setting sources for CLAUDE.md loading
   // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
   sdkOptions.settingSources = ['project', 'user', 'local'];
+
+  // Prevent nested session detection: the server may inherit CLAUDECODE from
+  // a parent Claude Code session; clear it so the SDK child process starts cleanly.
+  const cleanEnv = { ...process.env };
+  delete cleanEnv.CLAUDECODE;
+  sdkOptions.env = cleanEnv;
 
   // Map resume session
   if (sessionId) {
@@ -209,14 +222,40 @@ function mapCliOptionsToSDK(options = {}) {
  * @param {Array<string>} tempImagePaths - Temp image file paths for cleanup
  * @param {string} tempDir - Temp directory for cleanup
  */
-function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = null) {
+function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = null, writer = null) {
   activeSessions.set(sessionId, {
     instance: queryInstance,
     startTime: Date.now(),
     status: 'active',
     tempImagePaths,
-    tempDir
+    tempDir,
+    writer
   });
+}
+
+/**
+ * Rebinds the writer for an active session (used when WebSocket reconnects)
+ * @param {string} sessionId - Session identifier
+ * @param {Object} newWriter - New WebSocket writer to bind
+ * @returns {boolean} True if session was found and writer rebound
+ */
+function rebindSessionWriter(sessionId, newWriter) {
+  const session = activeSessions.get(sessionId);
+  if (session && session.status === 'active') {
+    session.writer = newWriter;
+    // Re-send any pending permission requests for this session to the new writer
+    for (const [, meta] of pendingPermissionMeta) {
+      if (meta.sessionId === sessionId) {
+        try {
+          newWriter.send(meta);
+        } catch (err) {
+          console.error('[rebindSessionWriter] Failed to re-send permission request:', err);
+        }
+      }
+    }
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -285,14 +324,16 @@ function extractTokenBudget(resultMessage) {
   const cacheReadTokens = modelData.cumulativeCacheReadInputTokens || modelData.cacheReadInputTokens || 0;
   const cacheCreationTokens = modelData.cumulativeCacheCreationInputTokens || modelData.cacheCreationInputTokens || 0;
 
-  // Total used = input + output + cache tokens
-  const totalUsed = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
+  // Context window usage = input + output tokens only.
+  // Cache tokens (read/creation) are not separate content — they represent
+  // portions of inputTokens served from cache, so must NOT be added again.
+  const totalUsed = inputTokens + outputTokens;
 
   // Use configured context window budget from environment (default 160000)
   // This is the user's budget limit, not the model's context window
   const contextWindow = parseInt(process.env.CONTEXT_WINDOW) || 160000;
 
-  console.log(`Token calculation: input=${inputTokens}, output=${outputTokens}, cache=${cacheReadTokens + cacheCreationTokens}, total=${totalUsed}/${contextWindow}`);
+  console.log(`Token calculation: input=${inputTokens}, output=${outputTokens}, cacheRead=${cacheReadTokens}, cacheCreation=${cacheCreationTokens}, total=${totalUsed}/${contextWindow}`);
 
   return {
     used: totalUsed,
@@ -501,19 +542,31 @@ async function queryClaudeSDK(command, options = {}, ws) {
       }
 
       const requestId = createRequestId();
-      ws.send({
+      const permMsg = {
         type: 'claude-permission-request',
         requestId,
         toolName,
         input,
         sessionId: capturedSessionId || sessionId || null
-      });
+      };
+      // Store metadata so we can re-send on WebSocket reconnect
+      pendingPermissionMeta.set(requestId, permMsg);
+      // Use session's current writer for reconnect support
+      const permWriter = (() => {
+        const session = capturedSessionId ? getSession(capturedSessionId) : null;
+        return (session && session.writer) || ws;
+      })();
+      permWriter.send(permMsg);
 
       const decision = await waitForToolApproval(requestId, {
         timeoutMs: requiresInteraction ? 0 : undefined,
         signal: context?.signal,
         onCancel: (reason) => {
-          ws.send({
+          const cancelWriter = (() => {
+            const session = capturedSessionId ? getSession(capturedSessionId) : null;
+            return (session && session.writer) || ws;
+          })();
+          cancelWriter.send({
             type: 'claude-permission-cancelled',
             requestId,
             reason,
@@ -560,9 +613,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
       delete process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
     }
 
+    // Helper to get the current writer (supports rebinding on reconnect)
+    const getCurrentWriter = () => {
+      const session = capturedSessionId ? getSession(capturedSessionId) : null;
+      return (session && session.writer) || ws;
+    };
+
     // Track the query instance for abort capability
     if (capturedSessionId) {
-      addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir);
+      addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws);
     }
 
     // Process streaming messages
@@ -572,30 +631,28 @@ async function queryClaudeSDK(command, options = {}, ws) {
       if (message.session_id && !capturedSessionId) {
 
         capturedSessionId = message.session_id;
-        addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir);
+        addSession(capturedSessionId, queryInstance, tempImagePaths, tempDir, ws);
 
         // Set session ID on writer
-        if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-          ws.setSessionId(capturedSessionId);
+        const currentWriter = getCurrentWriter();
+        if (currentWriter.setSessionId && typeof currentWriter.setSessionId === 'function') {
+          currentWriter.setSessionId(capturedSessionId);
         }
 
         // Send session-created event only once for new sessions
         if (!sessionId && !sessionCreatedSent) {
           sessionCreatedSent = true;
-          ws.send({
+          currentWriter.send({
             type: 'session-created',
             sessionId: capturedSessionId
           });
-        } else {
-          console.log('Not sending session-created. sessionId:', sessionId, 'sessionCreatedSent:', sessionCreatedSent);
         }
-      } else {
-        console.log('No session_id in message or already captured. message.session_id:', message.session_id, 'capturedSessionId:', capturedSessionId);
       }
 
-      // Transform and send message to WebSocket
+      // Transform and send message to WebSocket (use current writer for reconnect support)
+      const currentWriter = getCurrentWriter();
       const transformedMessage = transformMessage(message);
-      ws.send({
+      currentWriter.send({
         type: 'claude-response',
         data: transformedMessage,
         sessionId: capturedSessionId || sessionId || null
@@ -606,7 +663,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
         const tokenBudget = extractTokenBudget(message);
         if (tokenBudget) {
           console.log('Token budget from modelUsage:', tokenBudget);
-          ws.send({
+          currentWriter.send({
             type: 'token-budget',
             data: tokenBudget,
             sessionId: capturedSessionId || sessionId || null
@@ -615,17 +672,11 @@ async function queryClaudeSDK(command, options = {}, ws) {
       }
     }
 
-    // Clean up session on completion
-    if (capturedSessionId) {
-      removeSession(capturedSessionId);
-    }
-
-    // Clean up temporary image files
-    await cleanupTempFiles(tempImagePaths, tempDir);
-
-    // Send completion event
+    // Send completion event BEFORE removing session, so getCurrentWriter()
+    // can still find the latest writer (important after WebSocket reconnect)
+    const completionWriter = getCurrentWriter();
     console.log('Streaming complete, sending claude-complete event');
-    ws.send({
+    completionWriter.send({
       type: 'claude-complete',
       sessionId: capturedSessionId,
       exitCode: 0,
@@ -633,8 +684,22 @@ async function queryClaudeSDK(command, options = {}, ws) {
     });
     console.log('claude-complete event sent');
 
+    // Clean up session on completion (after sending claude-complete)
+    if (capturedSessionId) {
+      removeSession(capturedSessionId);
+    }
+
+    // Clean up temporary image files
+    await cleanupTempFiles(tempImagePaths, tempDir);
+
   } catch (error) {
     console.error('SDK query error:', error);
+
+    // Helper to get the current writer (supports rebinding on reconnect)
+    const getErrorWriter = () => {
+      const session = capturedSessionId ? getSession(capturedSessionId) : null;
+      return (session && session.writer) || ws;
+    };
 
     // Clean up session on error
     if (capturedSessionId) {
@@ -644,8 +709,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
     // Clean up temporary image files on error
     await cleanupTempFiles(tempImagePaths, tempDir);
 
-    // Send error to WebSocket
-    ws.send({
+    // Send error to WebSocket (use current writer for reconnect support)
+    const errorWriter = getErrorWriter();
+    errorWriter.send({
       type: 'claude-error',
       error: error.message,
       sessionId: capturedSessionId || sessionId || null
@@ -664,8 +730,8 @@ async function abortClaudeSDKSession(sessionId) {
   const session = getSession(sessionId);
 
   if (!session) {
-    console.log(`Session ${sessionId} not found`);
-    return false;
+    console.log(`Session ${sessionId} not found (already terminated)`);
+    return true;
   }
 
   try {
@@ -697,7 +763,7 @@ async function abortClaudeSDKSession(sessionId) {
  */
 function isClaudeSDKSessionActive(sessionId) {
   const session = getSession(sessionId);
-  return session && session.status === 'active';
+  return !!(session && session.status === 'active');
 }
 
 /**
@@ -714,5 +780,6 @@ export {
   abortClaudeSDKSession,
   isClaudeSDKSessionActive,
   getActiveClaudeSDKSessions,
-  resolveToolApproval
+  resolveToolApproval,
+  rebindSessionWriter
 };
