@@ -649,6 +649,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
       }
 
+      // logs which model was used in the message
+      console.log("---> Model was sent using:", Object.keys(message.modelUsage || {}));
+
       // Transform and send message to WebSocket (use current writer for reconnect support)
       const currentWriter = getCurrentWriter();
       const transformedMessage = transformMessage(message);
