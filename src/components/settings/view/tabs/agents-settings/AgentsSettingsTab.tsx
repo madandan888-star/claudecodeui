@@ -9,15 +9,19 @@ export default function AgentsSettingsTab({
   claudeAuthStatus,
   cursorAuthStatus,
   codexAuthStatus,
+  geminiAuthStatus,
   onClaudeLogin,
   onCursorLogin,
   onCodexLogin,
+  onGeminiLogin,
   claudePermissions,
   onClaudePermissionsChange,
   cursorPermissions,
   onCursorPermissionsChange,
   codexPermissionMode,
   onCodexPermissionModeChange,
+  geminiPermissionMode,
+  onGeminiPermissionModeChange,
   mcpServers,
   cursorMcpServers,
   codexMcpServers,
@@ -48,24 +52,30 @@ export default function AgentsSettingsTab({
       authStatus: codexAuthStatus,
       onLogin: onCodexLogin,
     },
+    gemini: {
+      authStatus: geminiAuthStatus,
+      onLogin: onGeminiLogin,
+    },
   }), [
     claudeAuthStatus,
     codexAuthStatus,
     cursorAuthStatus,
+    geminiAuthStatus,
     onClaudeLogin,
     onCodexLogin,
     onCursorLogin,
+    onGeminiLogin,
   ]);
 
   return (
-    <div className="flex flex-col md:flex-row h-full min-h-[400px] md:min-h-[500px]">
+    <div className="flex h-full min-h-[400px] flex-col md:min-h-[500px] md:flex-row">
       <AgentSelectorSection
         selectedAgent={selectedAgent}
         onSelectAgent={setSelectedAgent}
         agentContextById={agentContextById}
       />
 
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex flex-1 flex-col overflow-hidden">
         <AgentCategoryTabsSection
           selectedCategory={selectedCategory}
           onSelectCategory={setSelectedCategory}
@@ -81,6 +91,8 @@ export default function AgentsSettingsTab({
           onCursorPermissionsChange={onCursorPermissionsChange}
           codexPermissionMode={codexPermissionMode}
           onCodexPermissionModeChange={onCodexPermissionModeChange}
+          geminiPermissionMode={geminiPermissionMode}
+          onGeminiPermissionModeChange={onGeminiPermissionModeChange}
           mcpServers={mcpServers}
           cursorMcpServers={cursorMcpServers}
           codexMcpServers={codexMcpServers}

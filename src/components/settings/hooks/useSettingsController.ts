@@ -16,6 +16,7 @@ import type {
   CodexMcpFormState,
   CodexPermissionMode,
   CursorPermissionsState,
+  GeminiPermissionMode,
   McpServer,
   McpToolsResult,
   McpTestResult,
@@ -40,6 +41,7 @@ type StatusApiResponse = {
   authenticated?: boolean;
   email?: string | null;
   error?: string | null;
+  method?: string;
 };
 
 type JsonResult = {
@@ -204,6 +206,7 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
     createEmptyCursorPermissions()
   ));
   const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
+  const [geminiPermissionMode, setGeminiPermissionMode] = useState<GeminiPermissionMode>('default');
 
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [cursorMcpServers, setCursorMcpServers] = useState<McpServer[]>([]);
@@ -224,6 +227,7 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
   const [claudeAuthStatus, setClaudeAuthStatus] = useState<AuthStatus>(DEFAULT_AUTH_STATUS);
   const [cursorAuthStatus, setCursorAuthStatus] = useState<AuthStatus>(DEFAULT_AUTH_STATUS);
   const [codexAuthStatus, setCodexAuthStatus] = useState<AuthStatus>(DEFAULT_AUTH_STATUS);
+  const [geminiAuthStatus, setGeminiAuthStatus] = useState<AuthStatus>(DEFAULT_AUTH_STATUS);
 
   const setAuthStatusByProvider = useCallback((provider: AgentProvider, status: AuthStatus) => {
     if (provider === 'claude') {
@@ -233,6 +237,11 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
 
     if (provider === 'cursor') {
       setCursorAuthStatus(status);
+      return;
+    }
+
+    if (provider === 'gemini') {
+      setGeminiAuthStatus(status);
       return;
     }
 
@@ -259,6 +268,7 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
         email: data.email || null,
         loading: false,
         error: data.error || null,
+        method: data.method,
       });
     } catch (error) {
       console.error(`Error checking ${provider} auth status:`, error);
@@ -655,6 +665,12 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
       );
       setCodexPermissionMode(toCodexPermissionMode(savedCodexSettings.permissionMode));
 
+      const savedGeminiSettings = parseJson<{ permissionMode?: GeminiPermissionMode }>(
+        localStorage.getItem('gemini-settings'),
+        {},
+      );
+      setGeminiPermissionMode(savedGeminiSettings.permissionMode || 'default');
+
       await Promise.all([
         fetchMcpServers(),
         fetchCursorMcpServers(),
@@ -707,6 +723,11 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
 
       localStorage.setItem('codex-settings', JSON.stringify({
         permissionMode: codexPermissionMode,
+        lastUpdated: now,
+      }));
+
+      localStorage.setItem('gemini-settings', JSON.stringify({
+        permissionMode: geminiPermissionMode,
         lastUpdated: now,
       }));
 
@@ -771,6 +792,7 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
     void checkAuthStatus('claude');
     void checkAuthStatus('cursor');
     void checkAuthStatus('codex');
+    void checkAuthStatus('gemini');
   }, [checkAuthStatus, initialTab, isOpen, loadSettings]);
 
   useEffect(() => {
@@ -830,6 +852,9 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
     claudeAuthStatus,
     cursorAuthStatus,
     codexAuthStatus,
+    geminiAuthStatus,
+    geminiPermissionMode,
+    setGeminiPermissionMode,
     openLoginForProvider,
     showLoginModal,
     setShowLoginModal,

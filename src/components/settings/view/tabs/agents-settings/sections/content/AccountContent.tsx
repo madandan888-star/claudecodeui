@@ -1,7 +1,6 @@
 import { LogIn } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { Badge } from '../../../../../../ui/badge';
-import { Button } from '../../../../../../ui/button';
+import { Badge, Button } from '../../../../../../../shared/view/ui';
 import SessionProviderLogo from '../../../../../../llm-logo-provider/SessionProviderLogo';
 import type { AgentProvider, AuthStatus } from '../../../../../types/types';
 
@@ -18,6 +17,7 @@ type AgentVisualConfig = {
   textClass: string;
   subtextClass: string;
   buttonClass: string;
+  description?: string;
 };
 
 const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
@@ -45,6 +45,15 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     subtextClass: 'text-gray-700 dark:text-gray-300',
     buttonClass: 'bg-gray-800 hover:bg-gray-900 dark:bg-gray-700 dark:hover:bg-gray-600',
   },
+  gemini: {
+    name: 'Gemini',
+    description: 'Google Gemini AI assistant',
+    bgClass: 'bg-indigo-50 dark:bg-indigo-900/20',
+    borderClass: 'border-indigo-200 dark:border-indigo-800',
+    textClass: 'text-indigo-900 dark:text-indigo-100',
+    subtextClass: 'text-indigo-700 dark:text-indigo-300',
+    buttonClass: 'bg-indigo-600 hover:bg-indigo-700',
+  },
 };
 
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
@@ -53,8 +62,8 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3 mb-4">
-        <SessionProviderLogo provider={agent} className="w-6 h-6" />
+      <div className="mb-4 flex items-center gap-3">
+        <SessionProviderLogo provider={agent} className="h-6 w-6" />
         <div>
           <h3 className="text-lg font-medium text-foreground">{config.name}</h3>
           <p className="text-sm text-muted-foreground">{t(`agents.account.${agent}.description`)}</p>
@@ -97,31 +106,33 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
             </div>
           </div>
 
-          <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className={`font-medium ${config.textClass}`}>
-                  {authStatus.authenticated ? t('agents.login.reAuthenticate') : t('agents.login.title')}
+          {authStatus.method !== 'api_key' && (
+            <div className="border-t border-gray-200 pt-4 dark:border-gray-700">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className={`font-medium ${config.textClass}`}>
+                    {authStatus.authenticated ? t('agents.login.reAuthenticate') : t('agents.login.title')}
+                  </div>
+                  <div className={`text-sm ${config.subtextClass}`}>
+                    {authStatus.authenticated
+                      ? t('agents.login.reAuthDescription')
+                      : t('agents.login.description', { agent: config.name })}
+                  </div>
                 </div>
-                <div className={`text-sm ${config.subtextClass}`}>
-                  {authStatus.authenticated
-                    ? t('agents.login.reAuthDescription')
-                    : t('agents.login.description', { agent: config.name })}
-                </div>
+                <Button
+                  onClick={onLogin}
+                  className={`${config.buttonClass} text-white`}
+                  size="sm"
+                >
+                  <LogIn className="mr-2 h-4 w-4" />
+                  {authStatus.authenticated ? t('agents.login.reLoginButton') : t('agents.login.button')}
+                </Button>
               </div>
-              <Button
-                onClick={onLogin}
-                className={`${config.buttonClass} text-white`}
-                size="sm"
-              >
-                <LogIn className="w-4 h-4 mr-2" />
-                {authStatus.authenticated ? t('agents.login.reLoginButton') : t('agents.login.button')}
-              </Button>
             </div>
-          </div>
+          )}
 
           {authStatus.error && (
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-4">
+            <div className="border-t border-gray-200 pt-4 dark:border-gray-700">
               <div className="text-sm text-red-600 dark:text-red-400">
                 {t('agents.error', { error: authStatus.error })}
               </div>

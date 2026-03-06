@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type React from 'react';
 import type { TFunction } from 'i18next';
 import { api } from '../../../utils/api';
-import type { Project, ProjectSession } from '../../../types/app';
+import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
 import type {
   AdditionalSessionsByProject,
   DeleteProjectConfirmation,
@@ -141,21 +140,6 @@ export function useSidebarController({
     };
   }, []);
 
-  const handleTouchClick = useCallback(
-    (callback: () => void) =>
-      (event: React.TouchEvent<HTMLElement>) => {
-        const target = event.target as HTMLElement;
-        if (target.closest('.overflow-y-auto') || target.closest('[data-scroll-container]')) {
-          return;
-        }
-
-        event.preventDefault();
-        event.stopPropagation();
-        callback();
-      },
-    [],
-  );
-
   const toggleProject = useCallback((projectName: string) => {
     setExpandedProjects((prev) => {
       const next = new Set<string>();
@@ -277,10 +261,14 @@ export function useSidebarController({
     setSessionDeleteConfirmation(null);
 
     try {
-      const response =
-        provider === 'codex'
-          ? await api.deleteCodexSession(sessionId)
-          : await api.deleteSession(projectName, sessionId);
+      let response;
+      if (provider === 'codex') {
+        response = await api.deleteCodexSession(sessionId);
+      } else if (provider === 'gemini') {
+        response = await api.deleteGeminiSession(sessionId);
+      } else {
+        response = await api.deleteSession(projectName, sessionId);
+      }
 
       if (response.ok) {
         onSessionDelete?.(sessionId);
@@ -401,12 +389,30 @@ export function useSidebarController({
   }, [onRefresh]);
 
   const updateSessionSummary = useCallback(
-    async (_projectName: string, _sessionId: string, _summary: string) => {
-      // Session rename endpoint is not currently exposed on the API.
-      setEditingSession(null);
-      setEditingSessionName('');
+    async (_projectName: string, sessionId: string, summary: string, provider: SessionProvider) => {
+      const trimmed = summary.trim();
+      if (!trimmed) {
+        setEditingSession(null);
+        setEditingSessionName('');
+        return;
+      }
+      try {
+        const response = await api.renameSession(sessionId, trimmed, provider);
+        if (response.ok) {
+          await onRefresh();
+        } else {
+          console.error('[Sidebar] Failed to rename session:', response.status);
+          alert(t('messages.renameSessionFailed'));
+        }
+      } catch (error) {
+        console.error('[Sidebar] Error renaming session:', error);
+        alert(t('messages.renameSessionError'));
+      } finally {
+        setEditingSession(null);
+        setEditingSessionName('');
+      }
     },
-    [],
+    [onRefresh, t],
   );
 
   const collapseSidebar = useCallback(() => {
@@ -438,7 +444,6 @@ export function useSidebarController({
     showVersionModal,
     starredProjects,
     filteredProjects,
-    handleTouchClick,
     toggleProject,
     handleSessionClick,
     toggleStarProject,

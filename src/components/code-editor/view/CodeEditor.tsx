@@ -14,6 +14,7 @@ import CodeEditorFooter from './subcomponents/CodeEditorFooter';
 import CodeEditorHeader from './subcomponents/CodeEditorHeader';
 import CodeEditorLoadingState from './subcomponents/CodeEditorLoadingState';
 import CodeEditorSurface from './subcomponents/CodeEditorSurface';
+import CodeEditorBinaryFile from './subcomponents/CodeEditorBinaryFile';
 
 type CodeEditorProps = {
   file: CodeEditorFile;
@@ -54,6 +55,7 @@ export default function CodeEditor({
     saving,
     saveSuccess,
     saveError,
+    isBinary,
     handleSave,
     handleDownload,
   } = useCodeEditorDocument({
@@ -158,6 +160,21 @@ export default function CodeEditor({
     );
   }
 
+  // Binary file display
+  if (isBinary) {
+    return (
+      <CodeEditorBinaryFile
+        file={file}
+        isSidebar={isSidebar}
+        isFullscreen={isFullscreen}
+        onClose={onClose}
+        onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
+        title={t('binaryFile.title', 'Binary File')}
+        message={t('binaryFile.message', 'The file "{{fileName}}" cannot be displayed in the text editor because it is a binary file.', { fileName: file.name })}
+      />
+    );
+  }
+
   const outerContainerClassName = isSidebar
     ? 'w-full h-full flex flex-col'
     : `fixed inset-0 z-[9999] md:bg-black/50 md:flex md:items-center md:justify-center md:p-4 ${isFullscreen ? 'md:p-0' : ''}`;
@@ -203,7 +220,7 @@ export default function CodeEditor({
           />
 
           {saveError && (
-            <div className="px-3 py-1.5 text-xs text-red-700 bg-red-50 border-b border-red-200 dark:bg-red-900/20 dark:text-red-300 dark:border-red-900/40">
+            <div className="border-b border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
               {saveError}
             </div>
           )}

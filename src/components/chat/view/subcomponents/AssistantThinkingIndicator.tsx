@@ -53,7 +53,14 @@ export default function AssistantThinkingIndicator({ selectedProvider, status, o
     return () => clearInterval(timer);
   }, []);
 
-  const providerName = selectedProvider === 'cursor' ? 'Cursor' : selectedProvider === 'codex' ? 'Codex' : 'Claude';
+  const providerName =
+    selectedProvider === 'cursor'
+      ? 'Cursor'
+      : selectedProvider === 'codex'
+        ? 'Codex'
+        : selectedProvider === 'gemini'
+          ? 'Gemini'
+          : 'Claude';
   const tokens = status?.tokens || fakeTokens;
   const canInterrupt = status?.can_interrupt !== false;
 

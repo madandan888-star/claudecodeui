@@ -36,7 +36,7 @@ function createRequestId() {
 }
 
 function waitForToolApproval(requestId, options = {}) {
-  const { timeoutMs = TOOL_APPROVAL_TIMEOUT_MS, signal, onCancel } = options;
+  const { timeoutMs = TOOL_APPROVAL_TIMEOUT_MS, signal, onCancel, metadata } = options;
 
   return new Promise(resolve => {
     let settled = false;
@@ -81,9 +81,14 @@ function waitForToolApproval(requestId, options = {}) {
       signal.addEventListener('abort', abortHandler, { once: true });
     }
 
-    pendingToolApprovals.set(requestId, (decision) => {
+    const resolver = (decision) => {
       finalize(decision);
-    });
+    };
+    // Attach metadata for getPendingApprovalsForSession lookup
+    if (metadata) {
+      Object.assign(resolver, metadata);
+    }
+    pendingToolApprovals.set(requestId, resolver);
   });
 }
 
@@ -561,6 +566,12 @@ async function queryClaudeSDK(command, options = {}, ws) {
       const decision = await waitForToolApproval(requestId, {
         timeoutMs: requiresInteraction ? 0 : undefined,
         signal: context?.signal,
+        metadata: {
+          _sessionId: capturedSessionId || sessionId || null,
+          _toolName: toolName,
+          _input: input,
+          _receivedAt: new Date(),
+        },
         onCancel: (reason) => {
           const cancelWriter = (() => {
             const session = capturedSessionId ? getSession(capturedSessionId) : null;
@@ -649,9 +660,6 @@ async function queryClaudeSDK(command, options = {}, ws) {
         }
       }
 
-      // logs which model was used in the message
-      console.log("---> Model was sent using:", Object.keys(message.modelUsage || {}));
-
       // Transform and send message to WebSocket (use current writer for reconnect support)
       const currentWriter = getCurrentWriter();
       const transformedMessage = transformMessage(message);
@@ -663,6 +671,10 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
       // Extract and send token budget updates from result messages
       if (message.type === 'result') {
+        const models = Object.keys(message.modelUsage || {});
+        if (models.length > 0) {
+          console.log("---> Model was sent using:", models);
+        }
         const tokenBudget = extractTokenBudget(message);
         if (tokenBudget) {
           console.log('Token budget from modelUsage:', tokenBudget);
@@ -777,6 +789,43 @@ function getActiveClaudeSDKSessions() {
   return getAllSessions();
 }
 
+/**
+ * Get pending tool approvals for a specific session.
+ * @param {string} sessionId - The session ID
+ * @returns {Array} Array of pending permission request objects
+ */
+function getPendingApprovalsForSession(sessionId) {
+  const pending = [];
+  for (const [requestId, resolver] of pendingToolApprovals.entries()) {
+    if (resolver._sessionId === sessionId) {
+      pending.push({
+        requestId,
+        toolName: resolver._toolName || 'UnknownTool',
+        input: resolver._input,
+        context: resolver._context,
+        sessionId,
+        receivedAt: resolver._receivedAt || new Date(),
+      });
+    }
+  }
+  return pending;
+}
+
+/**
+ * Reconnect a session's WebSocketWriter to a new raw WebSocket.
+ * Called when client reconnects (e.g. page refresh) while SDK is still running.
+ * @param {string} sessionId - The session ID
+ * @param {Object} newRawWs - The new raw WebSocket connection
+ * @returns {boolean} True if writer was successfully reconnected
+ */
+function reconnectSessionWriter(sessionId, newRawWs) {
+  const session = getSession(sessionId);
+  if (!session?.writer?.updateWebSocket) return false;
+  session.writer.updateWebSocket(newRawWs);
+  console.log(`[RECONNECT] Writer swapped for session ${sessionId}`);
+  return true;
+}
+
 // Export public API
 export {
   queryClaudeSDK,
@@ -784,5 +833,7 @@ export {
   isClaudeSDKSessionActive,
   getActiveClaudeSDKSessions,
   resolveToolApproval,
-  rebindSessionWriter
+  rebindSessionWriter,
+  getPendingApprovalsForSession,
+  reconnectSessionWriter
 };

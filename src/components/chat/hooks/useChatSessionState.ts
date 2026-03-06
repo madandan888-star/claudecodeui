@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { MutableRefObject } from 'react';
-
 import { api, authenticatedFetch } from '../../../utils/api';
 import type { ChatMessage, Provider } from '../types/types';
 import type { Project, ProjectSession } from '../../../types/app';
@@ -95,6 +94,7 @@ export function useChatSessionState({
   const scrollPositionRef = useRef({ height: 0, top: 0 });
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastLoadedSessionKeyRef = useRef<string | null>(null);
 
   // When WebSocket reconnects while loading, check if the session is still processing
   const prevConnectedRef = useRef(isConnected);
@@ -337,10 +337,15 @@ export function useChatSessionState({
     pendingScrollRestoreRef.current = null;
   }, [chatMessages.length]);
 
+  const prevSessionMessagesLengthRef = useRef(0);
+  const isInitialLoadRef = useRef(true);
+
   useEffect(() => {
     pendingInitialScrollRef.current = true;
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
+    prevSessionMessagesLengthRef.current = 0;
+    isInitialLoadRef.current = true;
     setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     setIsUserScrolledUp(false);
   }, [selectedProject?.name, selectedSession?.id]);
@@ -422,6 +427,15 @@ export function useChatSessionState({
           }
         }
 
+        // Skip loading if session+project+provider hasn't changed
+        const sessionKey = `${selectedSession.id}:${selectedProject.name}:${provider}`;
+        if (lastLoadedSessionKeyRef.current === sessionKey) {
+          setTimeout(() => {
+            isLoadingSessionRef.current = false;
+          }, 250);
+          return;
+        }
+
         if (provider === 'cursor') {
           setCurrentSessionId(selectedSession.id);
           sessionStorage.setItem('cursorSessionId', selectedSession.id);
@@ -449,6 +463,9 @@ export function useChatSessionState({
             setIsSystemSessionChange(false);
           }
         }
+
+        // Update the last loaded session key
+        lastLoadedSessionKeyRef.current = sessionKey;
       } else {
         if (!isSystemSessionChange) {
           resetStreamingState();
@@ -466,6 +483,7 @@ export function useChatSessionState({
         setHasMoreMessages(false);
         setTotalMessages(0);
         setTokenBudget(null);
+        lastLoadedSessionKeyRef.current = null;
       }
 
       setTimeout(() => {
@@ -482,7 +500,7 @@ export function useChatSessionState({
     pendingViewSessionRef,
     resetStreamingState,
     selectedProject,
-    selectedSession,
+    selectedSession?.id, // Only depend on session ID, not the entire object
     sendMessage,
     ws,
   ]);
@@ -539,11 +557,24 @@ export function useChatSessionState({
     }
   }, [pendingViewSessionRef, selectedSession?.id]);
 
+
   useEffect(() => {
-    if (sessionMessages.length > 0) {
-      setChatMessages(convertedMessages);
+    // Only sync sessionMessages to chatMessages when:
+    // 1. Not currently loading (to avoid overwriting user's just-sent message)
+    // 2. SessionMessages actually changed (including from non-empty to empty)
+    // 3. Either it's initial load OR sessionMessages increased (new messages from server)
+    if (
+      sessionMessages.length !== prevSessionMessagesLengthRef.current &&
+      !isLoading
+    ) {
+      // Only update if this is initial load, sessionMessages grew, or was cleared to empty
+      if (isInitialLoadRef.current || sessionMessages.length === 0 || sessionMessages.length > prevSessionMessagesLengthRef.current) {
+        setChatMessages(convertedMessages);
+        isInitialLoadRef.current = false;
+      }
+      prevSessionMessagesLengthRef.current = sessionMessages.length;
     }
-  }, [convertedMessages, sessionMessages.length]);
+  }, [convertedMessages, sessionMessages.length, isLoading, setChatMessages]);
 
   useEffect(() => {
     if (selectedProject && chatMessages.length > 0) {
