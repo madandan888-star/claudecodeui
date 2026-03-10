@@ -118,7 +118,7 @@
   "thinkingMode": {
     "selector": {
       "title": "Thinking 모드",
-      "description": "확장된 thinking은 Claude에게 대안을 평가할 시간을 더 줍니다",
+      "description": "확장된 thinking은 모델이 대안을 평가할 시간을 더 줍니다",
       "active": "활성",
       "tip": "높은 thinking 모드는 시간이 더 걸리지만 더 철저한 분석을 제공합니다"
     },

@@ -93,6 +93,30 @@ Open `http://localhost:3001` — all your existing sessions are discovered autom
 
 Visit the **[documentation →](https://cloudcli.ai/docs)** for more full configuration options, PM2, remote server setup and more
 
+### Single-Port PM2 Deployment
+
+If you want a stable remote deployment behind FRP, reverse proxy, or similar tooling, prefer running only the Express server on a fixed port and serve the built frontend from `dist`.
+
+Example:
+
+```bash
+cp .env.example .env
+# set PORT=3005
+# optional: also set VITE_CONTEXT_WINDOW / CONTEXT_WINDOW as needed
+
+npm install
+npm run build
+pm2 start npm --name claudecodeui --cwd /path/to/claudecodeui -- run server
+pm2 save
+```
+
+Notes:
+
+- Use `PORT=3005` if your FRP mapping is already targeting `3005`
+- Do not run `npm run dev` for this mode
+- This mode does not require a separate Vite port like `5173`
+- Point FRP or your reverse proxy directly at `3005`
+
 
 ---
 

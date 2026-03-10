@@ -1,3 +1,4 @@
+import { SlidersHorizontal } from 'lucide-react';
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import type { PermissionMode, Provider } from '../../types/types';
@@ -18,6 +19,8 @@ interface ChatInputControlsProps {
   isUserScrolledUp: boolean;
   hasMessages: boolean;
   onScrollToBottom: () => void;
+  isQuickSettingsOpen: boolean;
+  onToggleQuickSettings: () => void;
 }
 
 export default function ChatInputControls({
@@ -34,8 +37,11 @@ export default function ChatInputControls({
   isUserScrolledUp,
   hasMessages,
   onScrollToBottom,
+  isQuickSettingsOpen,
+  onToggleQuickSettings,
 }: ChatInputControlsProps) {
-  const { t } = useTranslation('chat');
+  const { t } = useTranslation(['chat', 'settings']);
+  const supportsThinkingMode = provider === 'claude' || provider === 'codex';
 
   return (
     <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3">
@@ -74,11 +80,25 @@ export default function ChatInputControls({
         </div>
       </button>
 
-      {provider === 'claude' && (
+      {supportsThinkingMode && (
         <ThinkingModeSelector selectedMode={thinkingMode} onModeChange={setThinkingMode} onClose={() => {}} className="" />
       )}
 
-      <TokenUsagePie used={tokenBudget?.used || 0} total={tokenBudget?.total || parseInt(import.meta.env.VITE_CONTEXT_WINDOW) || 160000} />
+      <TokenUsagePie used={tokenBudget?.used || 0} total={tokenBudget?.total || parseInt(import.meta.env.VITE_CONTEXT_WINDOW) || 1000000} />
+
+      <button
+        type="button"
+        onClick={onToggleQuickSettings}
+        className={`flex h-7 w-7 items-center justify-center rounded-lg border transition-colors sm:hidden ${
+          isQuickSettingsOpen
+            ? 'border-border/70 bg-accent/70 text-foreground'
+            : 'border-border/50 bg-card text-muted-foreground hover:bg-accent/60 hover:text-foreground'
+        }`}
+        title={t('settings:quickSettings.title')}
+        aria-label={t('settings:quickSettings.title')}
+      >
+        <SlidersHorizontal className="h-4 w-4" />
+      </button>
 
       <button
         type="button"

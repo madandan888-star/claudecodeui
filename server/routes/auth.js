@@ -1,5 +1,7 @@
 import express from 'express';
+import crypto from 'crypto';
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import { userDb, db } from '../database/db.js';
 import { generateToken, authenticateToken } from '../middleware/auth.js';
 
@@ -123,6 +125,64 @@ router.get('/user', authenticateToken, (req, res) => {
   res.json({
     user: req.user
   });
+});
+
+// ypbot JWT token bridge login
+router.post('/ypbot-login', async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
+    }
+
+    // Verify the ypbot JWT
+    const CLAUDE_JWT_SECRET = process.env.CLAUDE_JWT_SECRET || 'ypbot-claude-bridge-secret';
+    let decoded;
+    try {
+      decoded = jwt.verify(token, CLAUDE_JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ error: 'Invalid or expired ypbot token' });
+    }
+
+    const { username, allowed_projects, project_permissions_mode } = decoded;
+    if (!username) {
+      return res.status(400).json({ error: 'Token missing username' });
+    }
+
+    // Find or create user
+    let user = userDb.getUserByUsername(username);
+    if (!user) {
+      const saltRounds = 12;
+      const placeholderPassword = 'ypbot-managed-' + crypto.randomUUID();
+      const passwordHash = await bcrypt.hash(placeholderPassword, saltRounds);
+      user = userDb.createUser(username, passwordHash);
+    }
+
+    // Update last login
+    userDb.updateLastLogin(user.id);
+
+    const resolvedProjectPermissionsMode =
+      project_permissions_mode === 'all'
+        ? 'all'
+        : Array.isArray(allowed_projects)
+          ? 'restricted'
+          : 'all';
+
+    // Generate CCUI JWT token
+    const ccuiToken = generateToken(user, {
+      allowedProjects: allowed_projects || [],
+      projectPermissionsMode: resolvedProjectPermissionsMode,
+    });
+
+    res.json({
+      token: ccuiToken,
+      user: { id: user.id, username: user.username },
+      allowedProjects: allowed_projects || []
+    });
+  } catch (error) {
+    console.error('ypbot-login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // Logout (client-side token removal, but this endpoint can be used for logging)

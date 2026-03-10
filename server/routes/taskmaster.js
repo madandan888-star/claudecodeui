@@ -19,11 +19,39 @@ import os from 'os';
 import { extractProjectDirectory } from '../projects.js';
 import { detectTaskMasterMCPServer } from '../utils/mcp-detector.js';
 import { broadcastTaskMasterProjectUpdate, broadcastTaskMasterTasksUpdate } from '../utils/taskmaster-websocket.js';
+import {
+    filterProjectsByPermissions,
+    hasProjectAccess,
+    resolvePathForPermissionCheck,
+} from '../utils/projectPermissions.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const router = express.Router();
+
+router.param('projectName', async (req, res, next, projectName) => {
+    try {
+        const projectPath = await extractProjectDirectory(projectName);
+        const resolvedProjectPath = await resolvePathForPermissionCheck(projectPath);
+
+        if (!hasProjectAccess(resolvedProjectPath, req)) {
+            return res.status(403).json({
+                error: 'Project access denied',
+                message: `Project "${projectName}" is not accessible`
+            });
+        }
+
+        req.authorizedProjectPath = resolvedProjectPath;
+        next();
+    } catch (error) {
+        console.error('TaskMaster project authorization error:', error);
+        return res.status(404).json({
+            error: 'Project not found',
+            message: `Project "${projectName}" does not exist`
+        });
+    }
+});
 
 /**
  * Check if TaskMaster CLI is installed globally
@@ -351,7 +379,7 @@ router.get('/detect-all', async (req, res) => {
     try {
         // Import getProjects from the projects module
         const { getProjects } = await import('../projects.js');
-        const projects = await getProjects();
+        const projects = filterProjectsByPermissions(await getProjects(), req);
 
         // Run detection for all projects in parallel
         const detectionPromises = projects.map(async (project) => {

@@ -5,8 +5,21 @@ import { promises as fs } from 'fs';
 import { extractProjectDirectory } from '../projects.js';
 import { queryClaudeSDK } from '../claude-sdk.js';
 import { spawnCursor } from '../cursor-cli.js';
+import { hasProjectAccess, resolvePathForPermissionCheck } from '../utils/projectPermissions.js';
 
 const router = express.Router();
+
+function getRequestProjectName(req) {
+  if (typeof req.query?.project === 'string' && req.query.project.trim()) {
+    return req.query.project.trim();
+  }
+
+  if (typeof req.body?.project === 'string' && req.body.project.trim()) {
+    return req.body.project.trim();
+  }
+
+  return null;
+}
 
 function spawnAsync(command, args, options = {}) {
   return new Promise((resolve, reject) => {
@@ -85,6 +98,30 @@ async function getActualProjectPath(projectName) {
     return projectName.replace(/-/g, '/');
   }
 }
+
+async function authorizeGitProject(req, res, next) {
+  const projectName = getRequestProjectName(req);
+  if (!projectName) {
+    return next();
+  }
+
+  try {
+    const projectPath = await getActualProjectPath(projectName);
+    const resolvedProjectPath = await resolvePathForPermissionCheck(projectPath);
+
+    if (!hasProjectAccess(resolvedProjectPath, req)) {
+      return res.status(403).json({ error: 'Project access denied' });
+    }
+
+    req.authorizedProjectPath = resolvedProjectPath;
+    next();
+  } catch (error) {
+    console.error(`Git project authorization error for ${projectName}:`, error);
+    res.status(404).json({ error: 'Project not found' });
+  }
+}
+
+router.use(authorizeGitProject);
 
 // Helper function to strip git diff headers
 function stripDiffHeaders(diff) {

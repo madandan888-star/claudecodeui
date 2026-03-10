@@ -6,6 +6,16 @@ import { IS_PLATFORM } from '../constants/config.js';
 const JWT_SECRET = process.env.JWT_SECRET || 'claude-ui-dev-secret-change-in-production';
 
 // Optional API key middleware
+const applyTokenPermissions = (target, decoded) => {
+  target.allowedProjects = Array.isArray(decoded?.allowedProjects) ? decoded.allowedProjects : [];
+  target.projectPermissionsMode =
+    decoded?.projectPermissionsMode === 'all'
+      ? 'all'
+      : Array.isArray(decoded?.allowedProjects)
+        ? 'restricted'
+        : 'all';
+};
+
 const validateApiKey = (req, res, next) => {
   // Skip API key validation if not configured
   if (!process.env.API_KEY) {
@@ -21,14 +31,36 @@ const validateApiKey = (req, res, next) => {
 
 // JWT authentication middleware
 const authenticateToken = async (req, res, next) => {
-  // Platform mode:  use single database user
+  // Platform mode: try JWT auth first, then fall back to single database user
   if (IS_PLATFORM) {
     try {
+      // Check for Authorization: Bearer <token> header first (ypbot-login users)
+      const authHeader = req.headers['authorization'];
+      const bearerToken = authHeader && authHeader.split(' ')[1];
+
+      if (bearerToken) {
+        try {
+          const decoded = jwt.verify(bearerToken, JWT_SECRET);
+          const user = userDb.getUserById(decoded.userId);
+          if (user) {
+            req.user = user;
+            applyTokenPermissions(req, decoded);
+            return next();
+          }
+          return res.status(401).json({ error: 'Invalid token. User not found.' });
+        } catch (tokenError) {
+          return res.status(403).json({ error: 'Invalid token' });
+        }
+      }
+
+      // Fall back to first user (original platform mode behavior)
       const user = userDb.getFirstUser();
       if (!user) {
         return res.status(500).json({ error: 'Platform mode: No user found in database' });
       }
       req.user = user;
+      req.allowedProjects = [];
+      req.projectPermissionsMode = 'all';
       return next();
     } catch (error) {
       console.error('Platform mode error:', error);
@@ -59,6 +91,7 @@ const authenticateToken = async (req, res, next) => {
     }
 
     req.user = user;
+    applyTokenPermissions(req, decoded);
     next();
   } catch (error) {
     console.error('Token verification error:', error);
@@ -67,11 +100,12 @@ const authenticateToken = async (req, res, next) => {
 };
 
 // Generate JWT token (never expires)
-const generateToken = (user) => {
+const generateToken = (user, extraClaims = {}) => {
   return jwt.sign(
     { 
       userId: user.id, 
-      username: user.username 
+      username: user.username,
+      ...extraClaims,
     },
     JWT_SECRET
     // No expiration - token lasts forever
@@ -80,12 +114,34 @@ const generateToken = (user) => {
 
 // WebSocket authentication function
 const authenticateWebSocket = (token) => {
-  // Platform mode: bypass token validation, return first user
+  // Platform mode: try JWT first, then fall back to first user
   if (IS_PLATFORM) {
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const user = userDb.getUserById(decoded.userId);
+        if (user) {
+          return {
+            userId: user.id,
+            username: user.username,
+            allowedProjects: Array.isArray(decoded.allowedProjects) ? decoded.allowedProjects : [],
+            projectPermissionsMode:
+              decoded.projectPermissionsMode === 'all'
+                ? 'all'
+                : Array.isArray(decoded.allowedProjects)
+                  ? 'restricted'
+                  : 'all',
+          };
+        }
+        return null;
+      } catch (e) {
+        return null;
+      }
+    }
     try {
       const user = userDb.getFirstUser();
       if (user) {
-        return { userId: user.id, username: user.username };
+        return { userId: user.id, username: user.username, allowedProjects: [], projectPermissionsMode: 'all' };
       }
       return null;
     } catch (error) {
@@ -101,7 +157,16 @@ const authenticateWebSocket = (token) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    return decoded;
+    return {
+      ...decoded,
+      allowedProjects: Array.isArray(decoded.allowedProjects) ? decoded.allowedProjects : [],
+      projectPermissionsMode:
+        decoded.projectPermissionsMode === 'all'
+          ? 'all'
+          : Array.isArray(decoded.allowedProjects)
+            ? 'restricted'
+            : 'all',
+    };
   } catch (error) {
     console.error('WebSocket token verification error:', error);
     return null;

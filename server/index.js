@@ -69,6 +69,14 @@ import { startEnabledPluginServers, stopAllPlugins } from './utils/plugin-proces
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
+import { getCodexContextWindow } from '../shared/modelConstants.js';
+import {
+    authorizeResolvedPath,
+    filterProjectsByPermissions,
+    hasProjectAccess,
+    isPathWithin,
+    resolvePathForPermissionCheck,
+} from './utils/projectPermissions.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
 
@@ -95,15 +103,61 @@ let projectsWatcherDebounceTimer = null;
 const connectedClients = new Set();
 let isGetProjectsRunning = false; // Flag to prevent reentrant calls
 
+function getPermissionSource(source) {
+    return {
+        allowedProjects: source?.allowedProjects ?? [],
+        projectPermissionsMode: source?.projectPermissionsMode === 'restricted' ? 'restricted' : 'all',
+    };
+}
+
+function sendWebSocketError(ws, error) {
+    if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'error', error }));
+    }
+}
+
+async function ensureProjectAccessOrRespond(res, source, projectPath, error = 'Project access denied') {
+    const resolvedProjectPath = await resolvePathForPermissionCheck(projectPath);
+    if (!hasProjectAccess(resolvedProjectPath, getPermissionSource(source))) {
+        res.status(403).json({ error });
+        return null;
+    }
+
+    return resolvedProjectPath;
+}
+
+async function ensurePathAccessOrRespond(res, source, targetPath, options = {}) {
+    const { resolvedPath, allowed } = await authorizeResolvedPath(targetPath, getPermissionSource(source), options);
+    if (!allowed) {
+        res.status(403).json({ error: options.error || 'Path access denied' });
+        return null;
+    }
+
+    return resolvedPath;
+}
+
+async function getAuthorizedWebSocketProjectPath(ws, projectPath, error = 'Project access denied') {
+    const resolvedProjectPath = await resolvePathForPermissionCheck(projectPath);
+    if (!hasProjectAccess(resolvedProjectPath, getPermissionSource(ws))) {
+        sendWebSocketError(ws, error);
+        return null;
+    }
+
+    return resolvedProjectPath;
+}
+
 // Broadcast progress to all connected WebSocket clients
 function broadcastProgress(progress) {
-    const message = JSON.stringify({
-        type: 'loading_progress',
-        ...progress
-    });
     connectedClients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
-            client.send(message);
+            const payload = {
+                type: 'loading_progress',
+                ...progress
+            };
+            if (client.projectPermissionsMode === 'restricted') {
+                delete payload.currentProject;
+            }
+            client.send(JSON.stringify(payload));
         }
     });
 }
@@ -149,18 +203,16 @@ async function setupProjectsWatcher() {
                 const updatedProjects = await getProjects(broadcastProgress);
 
                 // Notify all connected clients about the project changes
-                const updateMessage = JSON.stringify({
-                    type: 'projects_updated',
-                    projects: updatedProjects,
-                    timestamp: new Date().toISOString(),
-                    changeType: eventType,
-                    changedFile: path.relative(rootPath, filePath),
-                    watchProvider: provider
-                });
-
                 connectedClients.forEach(client => {
                     if (client.readyState === WebSocket.OPEN) {
-                        client.send(updateMessage);
+                        client.send(JSON.stringify({
+                            type: 'projects_updated',
+                            projects: filterProjectsByPermissions(updatedProjects, client),
+                            timestamp: new Date().toISOString(),
+                            changeType: eventType,
+                            changedFile: path.relative(rootPath, filePath),
+                            watchProvider: provider
+                        }));
                     }
                 });
 
@@ -291,9 +343,13 @@ const wss = new WebSocketServer({
     verifyClient: (info) => {
         console.log('WebSocket connection attempt to:', info.req.url);
 
-        // Platform mode: always allow connection
+        const url = new URL(info.req.url, 'http://localhost');
+        const token = url.searchParams.get('token') ||
+            info.req.headers.authorization?.split(' ')[1];
+
+        // Platform mode: prefer token auth, fall back to first user when no token is present.
         if (IS_PLATFORM) {
-            const user = authenticateWebSocket(null); // Will return first user
+            const user = authenticateWebSocket(token);
             if (!user) {
                 console.log('[WARN] Platform mode: No user found in database');
                 return false;
@@ -304,12 +360,6 @@ const wss = new WebSocketServer({
         }
 
         // Normal mode: verify token
-        // Extract token from query parameters or headers
-        const url = new URL(info.req.url, 'http://localhost');
-        const token = url.searchParams.get('token') ||
-            info.req.headers.authorization?.split(' ')[1];
-
-        // Verify token
         const user = authenticateWebSocket(token);
         if (!user) {
             console.log('[WARN] WebSocket authentication failed');
@@ -490,7 +540,7 @@ app.post('/api/system/update', authenticateToken, async (req, res) => {
 app.get('/api/projects', authenticateToken, async (req, res) => {
     try {
         const projects = await getProjects(broadcastProgress);
-        res.json(projects);
+        res.json(filterProjectsByPermissions(projects, req));
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -499,6 +549,16 @@ app.get('/api/projects', authenticateToken, async (req, res) => {
 app.get('/api/projects/:projectName/sessions', authenticateToken, async (req, res) => {
     try {
         const { limit = 5, offset = 0 } = req.query;
+        const projectRoot = await extractProjectDirectory(req.params.projectName).catch(() => null);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const allowedProjectRoot = await ensureProjectAccessOrRespond(res, req, projectRoot);
+        if (!allowedProjectRoot) {
+            return;
+        }
+
         const result = await getSessions(req.params.projectName, parseInt(limit), parseInt(offset));
         applyCustomSessionNames(result.sessions, 'claude');
         res.json(result);
@@ -512,6 +572,15 @@ app.get('/api/projects/:projectName/sessions/:sessionId/messages', authenticateT
     try {
         const { projectName, sessionId } = req.params;
         const { limit, offset } = req.query;
+        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const allowedProjectRoot = await ensureProjectAccessOrRespond(res, req, projectRoot);
+        if (!allowedProjectRoot) {
+            return;
+        }
 
         // Parse limit and offset if provided
         const parsedLimit = limit ? parseInt(limit, 10) : null;
@@ -536,6 +605,16 @@ app.get('/api/projects/:projectName/sessions/:sessionId/messages', authenticateT
 app.put('/api/projects/:projectName/rename', authenticateToken, async (req, res) => {
     try {
         const { displayName } = req.body;
+        const projectRoot = await extractProjectDirectory(req.params.projectName).catch(() => null);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const allowedProjectRoot = await ensureProjectAccessOrRespond(res, req, projectRoot);
+        if (!allowedProjectRoot) {
+            return;
+        }
+
         await renameProject(req.params.projectName, displayName);
         res.json({ success: true });
     } catch (error) {
@@ -547,6 +626,16 @@ app.put('/api/projects/:projectName/rename', authenticateToken, async (req, res)
 app.delete('/api/projects/:projectName/sessions/:sessionId', authenticateToken, async (req, res) => {
     try {
         const { projectName, sessionId } = req.params;
+        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const allowedProjectRoot = await ensureProjectAccessOrRespond(res, req, projectRoot);
+        if (!allowedProjectRoot) {
+            return;
+        }
+
         console.log(`[API] Deleting session: ${sessionId} from project: ${projectName}`);
         await deleteSession(projectName, sessionId);
         sessionNamesDb.deleteName(sessionId, 'claude');
@@ -589,6 +678,16 @@ app.delete('/api/projects/:projectName', authenticateToken, async (req, res) => 
     try {
         const { projectName } = req.params;
         const force = req.query.force === 'true';
+        const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const allowedProjectRoot = await ensureProjectAccessOrRespond(res, req, projectRoot);
+        if (!allowedProjectRoot) {
+            return;
+        }
+
         await deleteProject(projectName, force);
         res.json({ success: true });
     } catch (error) {
@@ -605,7 +704,15 @@ app.post('/api/projects/create', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'Project path is required' });
         }
 
-        const project = await addProjectManually(projectPath.trim());
+        const allowedProjectPath = await ensurePathAccessOrRespond(res, req, projectPath.trim(), {
+            allowMissingLeaf: false,
+            error: 'Project access denied'
+        });
+        if (!allowedProjectPath) {
+            return;
+        }
+
+        const project = await addProjectManually(allowedProjectPath);
         res.json({ success: true, project });
     } catch (error) {
         console.error('Error creating project:', error);
@@ -689,11 +796,19 @@ app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {
             return res.status(403).json({ error: validation.error });
         }
         const resolvedPath = validation.resolvedPath || targetPath;
+        const allowedBrowsePath = await ensurePathAccessOrRespond(res, req, resolvedPath, {
+            allowMissingLeaf: false,
+            allowAncestorMatch: true,
+            error: 'Directory access denied'
+        });
+        if (!allowedBrowsePath) {
+            return;
+        }
 
         // Security check - ensure path is accessible
         try {
-            await fs.promises.access(resolvedPath);
-            const stats = await fs.promises.stat(resolvedPath);
+            await fs.promises.access(allowedBrowsePath);
+            const stats = await fs.promises.stat(allowedBrowsePath);
 
             if (!stats.isDirectory()) {
                 return res.status(400).json({ error: 'Path is not a directory' });
@@ -703,7 +818,7 @@ app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {
         }
 
         // Use existing getFileTree function with shallow depth (only direct children)
-        const fileTree = await getFileTree(resolvedPath, 1, 0, false); // maxDepth=1, showHidden=false
+        const fileTree = await getFileTree(allowedBrowsePath, 1, 0, false, req); // maxDepth=1, showHidden=false
 
         // Filter only directories and format for suggestions
         const directories = fileTree
@@ -729,7 +844,7 @@ app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {
         } catch (error) {
             // Use default root as-is if realpath fails
         }
-        if (resolvedPath === resolvedWorkspaceRoot) {
+        if (allowedBrowsePath === resolvedWorkspaceRoot) {
             const commonDirs = ['Desktop', 'Documents', 'Projects', 'Development', 'Dev', 'Code', 'workspace'];
             const existingCommon = directories.filter(dir => commonDirs.includes(dir.name));
             const otherDirs = directories.filter(dir => !commonDirs.includes(dir.name));
@@ -740,7 +855,7 @@ app.get('/api/browse-filesystem', authenticateToken, async (req, res) => {
         }
 
         res.json({
-            path: resolvedPath,
+            path: allowedBrowsePath,
             suggestions: suggestions
         });
 
@@ -763,21 +878,28 @@ app.post('/api/create-folder', authenticateToken, async (req, res) => {
             return res.status(403).json({ error: validation.error });
         }
         const targetPath = validation.resolvedPath || resolvedInput;
-        const parentDir = path.dirname(targetPath);
+        const allowedTargetPath = await ensurePathAccessOrRespond(res, req, targetPath, {
+            allowMissingLeaf: true,
+            error: 'Folder access denied'
+        });
+        if (!allowedTargetPath) {
+            return;
+        }
+        const parentDir = path.dirname(allowedTargetPath);
         try {
             await fs.promises.access(parentDir);
         } catch (err) {
             return res.status(404).json({ error: 'Parent directory does not exist' });
         }
         try {
-            await fs.promises.access(targetPath);
+            await fs.promises.access(allowedTargetPath);
             return res.status(409).json({ error: 'Folder already exists' });
         } catch (err) {
             // Folder doesn't exist, which is what we want
         }
         try {
-            await fs.promises.mkdir(targetPath, { recursive: false });
-            res.json({ success: true, path: targetPath });
+            await fs.promises.mkdir(allowedTargetPath, { recursive: false });
+            res.json({ success: true, path: allowedTargetPath });
         } catch (mkdirError) {
             if (mkdirError.code === 'EEXIST') {
                 return res.status(409).json({ error: 'Folder already exists' });
@@ -807,13 +929,15 @@ app.get('/api/projects/:projectName/file', authenticateToken, async (req, res) =
             return res.status(404).json({ error: 'Project not found' });
         }
 
-        // Handle both absolute and relative paths
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
+        const validation = await validatePathInProject(projectRoot, filePath);
+        if (!validation.valid) {
+            return res.status(403).json({ error: validation.error });
+        }
+        const resolved = await ensurePathAccessOrRespond(res, req, validation.resolved, {
+            error: 'File access denied'
+        });
+        if (!resolved) {
+            return;
         }
 
         const content = await fsPromises.readFile(resolved, 'utf8');
@@ -847,10 +971,15 @@ app.get('/api/projects/:projectName/files/content', authenticateToken, async (re
             return res.status(404).json({ error: 'Project not found' });
         }
 
-        const resolved = path.resolve(filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
+        const validation = await validatePathInProject(projectRoot, filePath);
+        if (!validation.valid) {
+            return res.status(403).json({ error: validation.error });
+        }
+        const resolved = await ensurePathAccessOrRespond(res, req, validation.resolved, {
+            error: 'File access denied'
+        });
+        if (!resolved) {
+            return;
         }
 
         // Check if file exists
@@ -904,13 +1033,16 @@ app.put('/api/projects/:projectName/file', authenticateToken, async (req, res) =
             return res.status(404).json({ error: 'Project not found' });
         }
 
-        // Handle both absolute and relative paths
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
+        const validation = await validatePathInProject(projectRoot, filePath, { allowMissingLeaf: true });
+        if (!validation.valid) {
+            return res.status(403).json({ error: validation.error });
+        }
+        const resolved = await ensurePathAccessOrRespond(res, req, validation.resolved, {
+            allowMissingLeaf: true,
+            error: 'File access denied'
+        });
+        if (!resolved) {
+            return;
         }
 
         // Write the new content
@@ -955,8 +1087,15 @@ app.get('/api/projects/:projectName/files', authenticateToken, async (req, res) 
             return res.status(404).json({ error: `Project path not found: ${actualPath}` });
         }
 
-        const files = await getFileTree(actualPath, 10, 0, true);
-        const hiddenFiles = files.filter(f => f.name.startsWith('.'));
+        const allowedProjectRoot = await ensurePathAccessOrRespond(res, req, actualPath, {
+            allowAncestorMatch: true,
+            error: 'Directory access denied'
+        });
+        if (!allowedProjectRoot) {
+            return;
+        }
+
+        const files = await getFileTree(actualPath, 10, 0, true, req);
         res.json(files);
     } catch (error) {
         console.error('[ERROR] File tree error:', error.message);
@@ -972,17 +1111,20 @@ app.get('/api/projects/:projectName/files', authenticateToken, async (req, res) 
  * Validate that a path is within the project root
  * @param {string} projectRoot - The project root path
  * @param {string} targetPath - The path to validate
- * @returns {{ valid: boolean, resolved?: string, error?: string }}
+ * @returns {Promise<{ valid: boolean, resolved?: string, projectRoot?: string, error?: string }>}
  */
-function validatePathInProject(projectRoot, targetPath) {
-    const resolved = path.isAbsolute(targetPath)
-        ? path.resolve(targetPath)
-        : path.resolve(projectRoot, targetPath);
-    const normalizedRoot = path.resolve(projectRoot) + path.sep;
-    if (!resolved.startsWith(normalizedRoot)) {
+async function validatePathInProject(projectRoot, targetPath, { allowMissingLeaf = false } = {}) {
+    const resolvedProjectRoot = await resolvePathForPermissionCheck(projectRoot);
+    const joinedTargetPath = path.isAbsolute(targetPath)
+        ? targetPath
+        : path.join(resolvedProjectRoot, targetPath);
+    const resolvedTargetPath = await resolvePathForPermissionCheck(joinedTargetPath, { allowMissingLeaf });
+
+    if (!isPathWithin(resolvedProjectRoot, resolvedTargetPath)) {
         return { valid: false, error: 'Path must be under project root' };
     }
-    return { valid: true, resolved };
+
+    return { valid: true, resolved: resolvedTargetPath, projectRoot: resolvedProjectRoot };
 }
 
 /**
@@ -1040,12 +1182,18 @@ app.post('/api/projects/:projectName/files/create', authenticateToken, async (re
         // Build and validate target path
         const targetDir = parentPath || '';
         const targetPath = targetDir ? path.join(targetDir, name) : name;
-        const validation = validatePathInProject(projectRoot, targetPath);
+        const validation = await validatePathInProject(projectRoot, targetPath, { allowMissingLeaf: true });
         if (!validation.valid) {
             return res.status(403).json({ error: validation.error });
         }
 
-        const resolvedPath = validation.resolved;
+        const resolvedPath = await ensurePathAccessOrRespond(res, req, validation.resolved, {
+            allowMissingLeaf: true,
+            error: `${type === 'file' ? 'File' : 'Directory'} access denied`
+        });
+        if (!resolvedPath) {
+            return;
+        }
 
         // Check if already exists
         try {
@@ -1111,12 +1259,17 @@ app.put('/api/projects/:projectName/files/rename', authenticateToken, async (req
         }
 
         // Validate old path
-        const oldValidation = validatePathInProject(projectRoot, oldPath);
+        const oldValidation = await validatePathInProject(projectRoot, oldPath);
         if (!oldValidation.valid) {
             return res.status(403).json({ error: oldValidation.error });
         }
 
-        const resolvedOldPath = oldValidation.resolved;
+        const resolvedOldPath = await ensurePathAccessOrRespond(res, req, oldValidation.resolved, {
+            error: 'File access denied'
+        });
+        if (!resolvedOldPath) {
+            return;
+        }
 
         // Check if old path exists
         try {
@@ -1128,26 +1281,33 @@ app.put('/api/projects/:projectName/files/rename', authenticateToken, async (req
         // Build and validate new path
         const parentDir = path.dirname(resolvedOldPath);
         const resolvedNewPath = path.join(parentDir, newName);
-        const newValidation = validatePathInProject(projectRoot, resolvedNewPath);
+        const newValidation = await validatePathInProject(projectRoot, resolvedNewPath, { allowMissingLeaf: true });
         if (!newValidation.valid) {
             return res.status(403).json({ error: newValidation.error });
+        }
+        const allowedNewPath = await ensurePathAccessOrRespond(res, req, newValidation.resolved, {
+            allowMissingLeaf: true,
+            error: 'File access denied'
+        });
+        if (!allowedNewPath) {
+            return;
         }
 
         // Check if new path already exists
         try {
-            await fsPromises.access(resolvedNewPath);
+            await fsPromises.access(allowedNewPath);
             return res.status(409).json({ error: 'A file or directory with this name already exists' });
         } catch {
             // Doesn't exist, which is what we want
         }
 
         // Rename
-        await fsPromises.rename(resolvedOldPath, resolvedNewPath);
+        await fsPromises.rename(resolvedOldPath, allowedNewPath);
 
         res.json({
             success: true,
             oldPath: resolvedOldPath,
-            newPath: resolvedNewPath,
+            newPath: allowedNewPath,
             newName,
             message: 'Renamed successfully'
         });
@@ -1183,12 +1343,17 @@ app.delete('/api/projects/:projectName/files', authenticateToken, async (req, re
         }
 
         // Validate path
-        const validation = validatePathInProject(projectRoot, targetPath);
+        const validation = await validatePathInProject(projectRoot, targetPath);
         if (!validation.valid) {
             return res.status(403).json({ error: validation.error });
         }
 
-        const resolvedPath = validation.resolved;
+        const resolvedPath = await ensurePathAccessOrRespond(res, req, validation.resolved, {
+            error: 'File access denied'
+        });
+        if (!resolvedPath) {
+            return;
+        }
 
         // Check if path exists and get stats
         let stats;
@@ -1199,7 +1364,7 @@ app.delete('/api/projects/:projectName/files', authenticateToken, async (req, re
         }
 
         // Prevent deleting the project root itself
-        if (resolvedPath === path.resolve(projectRoot)) {
+        if (resolvedPath === validation.projectRoot) {
             return res.status(403).json({ error: 'Cannot delete project root directory' });
         }
 
@@ -1314,7 +1479,7 @@ const uploadFilesHandler = async (req, res) => {
                 resolvedTargetDir = path.resolve(projectRoot);
                 console.log('[DEBUG] Using project root as target:', resolvedTargetDir);
             } else {
-                const validation = validatePathInProject(projectRoot, targetDir);
+                const validation = await validatePathInProject(projectRoot, targetDir, { allowMissingLeaf: true });
                 if (!validation.valid) {
                     console.log('[DEBUG] Path validation failed:', validation.error);
                     return res.status(403).json({ error: validation.error });
@@ -1322,6 +1487,15 @@ const uploadFilesHandler = async (req, res) => {
                 resolvedTargetDir = validation.resolved;
                 console.log('[DEBUG] Resolved target dir:', resolvedTargetDir);
             }
+
+            const allowedTargetDir = await ensurePathAccessOrRespond(res, req, resolvedTargetDir, {
+                allowMissingLeaf: true,
+                error: 'Upload target access denied'
+            });
+            if (!allowedTargetDir) {
+                return;
+            }
+            resolvedTargetDir = allowedTargetDir;
 
             // Ensure target directory exists
             try {
@@ -1331,7 +1505,7 @@ const uploadFilesHandler = async (req, res) => {
             }
 
             // Move uploaded files from temp to target directory
-            const uploadedFiles = [];
+            const uploadPlan = [];
             console.log('[DEBUG] Processing files:', req.files.map(f => ({ originalname: f.originalname, path: f.path })));
             for (let i = 0; i < req.files.length; i++) {
                 const file = req.files[i];
@@ -1341,16 +1515,37 @@ const uploadFilesHandler = async (req, res) => {
                 const destPath = path.join(resolvedTargetDir, fileName);
 
                 // Validate destination path
-                const destValidation = validatePathInProject(projectRoot, destPath);
+                const destValidation = await validatePathInProject(projectRoot, destPath, { allowMissingLeaf: true });
                 if (!destValidation.valid) {
                     console.log('[DEBUG] Destination validation failed for:', destPath);
                     // Clean up temp file
                     await fsPromises.unlink(file.path).catch(() => {});
                     continue;
                 }
+                const destinationAccess = await authorizeResolvedPath(destValidation.resolved, req, {
+                    allowMissingLeaf: true,
+                });
+                if (!destinationAccess.allowed) {
+                    for (const pendingFile of req.files) {
+                        await fsPromises.unlink(pendingFile.path).catch(() => {});
+                    }
+                    return res.status(403).json({ error: 'Upload destination access denied' });
+                }
+                const allowedDestPath = destinationAccess.resolvedPath;
+
+                uploadPlan.push({
+                    file,
+                    fileName,
+                    destinationPath: allowedDestPath,
+                });
+            }
+
+            const uploadedFiles = [];
+            for (const uploadItem of uploadPlan) {
+                const { file, fileName, destinationPath } = uploadItem;
 
                 // Ensure parent directory exists (for nested files from folder upload)
-                const parentDir = path.dirname(destPath);
+                const parentDir = path.dirname(destinationPath);
                 try {
                     await fsPromises.access(parentDir);
                 } catch {
@@ -1358,12 +1553,12 @@ const uploadFilesHandler = async (req, res) => {
                 }
 
                 // Move file (copy + unlink to handle cross-device scenarios)
-                await fsPromises.copyFile(file.path, destPath);
+                await fsPromises.copyFile(file.path, destinationPath);
                 await fsPromises.unlink(file.path);
 
                 uploadedFiles.push({
                     name: fileName,
-                    path: destPath,
+                    path: destinationPath,
                     size: file.size,
                     mimeType: file.mimetype
                 });
@@ -1398,6 +1593,9 @@ app.post('/api/projects/:projectName/files/upload', authenticateToken, uploadFil
 wss.on('connection', (ws, request) => {
     const url = request.url;
     console.log('[INFO] Client connected to:', url);
+    ws.user = request.user || null;
+    ws.allowedProjects = request.user?.allowedProjects ?? [];
+    ws.projectPermissionsMode = request.user?.projectPermissionsMode === 'restricted' ? 'restricted' : 'all';
 
     // Parse URL to get pathname without query parameters
     const urlObj = new URL(url, 'http://localhost');
@@ -1458,6 +1656,15 @@ function handleChatConnection(ws) {
             const data = JSON.parse(message);
 
             if (data.type === 'claude-command') {
+                const authorizedProjectPath = await getAuthorizedWebSocketProjectPath(
+                    ws,
+                    data.options?.projectPath || process.cwd(),
+                );
+                if (!authorizedProjectPath) {
+                    return;
+                }
+
+                data.options = { ...data.options, projectPath: authorizedProjectPath };
                 console.log('[DEBUG] User message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
@@ -1465,30 +1672,73 @@ function handleChatConnection(ws) {
                 // Use Claude Agents SDK
                 await queryClaudeSDK(data.command, data.options, writer);
             } else if (data.type === 'cursor-command') {
+                const authorizedProjectPath = await getAuthorizedWebSocketProjectPath(
+                    ws,
+                    data.options?.cwd || process.cwd(),
+                );
+                if (!authorizedProjectPath) {
+                    return;
+                }
+
+                data.options = { ...data.options, cwd: authorizedProjectPath };
                 console.log('[DEBUG] Cursor message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
                 await spawnCursor(data.command, data.options, writer);
             } else if (data.type === 'codex-command') {
+                const authorizedProjectPath = await getAuthorizedWebSocketProjectPath(
+                    ws,
+                    data.options?.projectPath || data.options?.cwd || process.cwd(),
+                );
+                if (!authorizedProjectPath) {
+                    return;
+                }
+
+                data.options = {
+                    ...data.options,
+                    projectPath: authorizedProjectPath,
+                    cwd: authorizedProjectPath,
+                };
                 console.log('[DEBUG] Codex message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
                 await queryCodex(data.command, data.options, writer);
             } else if (data.type === 'gemini-command') {
+                const authorizedProjectPath = await getAuthorizedWebSocketProjectPath(
+                    ws,
+                    data.options?.projectPath || data.options?.cwd || process.cwd(),
+                );
+                if (!authorizedProjectPath) {
+                    return;
+                }
+
+                data.options = {
+                    ...data.options,
+                    projectPath: authorizedProjectPath,
+                    cwd: authorizedProjectPath,
+                };
                 console.log('[DEBUG] Gemini message:', data.command || '[Continue/Resume]');
                 console.log('📁 Project:', data.options?.projectPath || data.options?.cwd || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 console.log('🤖 Model:', data.options?.model || 'default');
                 await spawnGemini(data.command, data.options, writer);
             } else if (data.type === 'cursor-resume') {
+                const authorizedProjectPath = await getAuthorizedWebSocketProjectPath(
+                    ws,
+                    data.options?.cwd || process.cwd(),
+                );
+                if (!authorizedProjectPath) {
+                    return;
+                }
+
                 // Backward compatibility: treat as cursor-command with resume and no prompt
                 console.log('[DEBUG] Cursor resume session (compat):', data.sessionId);
                 await spawnCursor('', {
                     sessionId: data.sessionId,
                     resume: true,
-                    cwd: data.options?.cwd
+                    cwd: authorizedProjectPath
                 }, writer);
             } else if (data.type === 'abort-session') {
                 console.log('[DEBUG] Abort session request:', data.sessionId);
@@ -1617,6 +1867,11 @@ function handleShellConnection(ws) {
 
             if (data.type === 'init') {
                 const projectPath = data.projectPath || process.cwd();
+                const authorizedProjectPath = await getAuthorizedWebSocketProjectPath(ws, projectPath);
+                if (!authorizedProjectPath) {
+                    return;
+                }
+
                 const sessionId = data.sessionId;
                 const hasSession = data.hasSession;
                 const provider = data.provider || 'claude';
@@ -1636,7 +1891,7 @@ function handleShellConnection(ws) {
                 const commandSuffix = isPlainShell && initialCommand
                     ? `_cmd_${Buffer.from(initialCommand).toString('base64').slice(0, 16)}`
                     : '';
-                ptySessionKey = `${projectPath}_${sessionId || 'default'}${commandSuffix}`;
+                ptySessionKey = `${authorizedProjectPath}_${sessionId || 'default'}${commandSuffix}`;
 
                 // Kill any existing login session before starting fresh
                 if (isLoginCommand) {
@@ -1676,7 +1931,7 @@ function handleShellConnection(ws) {
                     return;
                 }
 
-                console.log('[INFO] Starting shell in:', projectPath);
+                console.log('[INFO] Starting shell in:', authorizedProjectPath);
                 console.log('📋 Session info:', hasSession ? `Resume session ${sessionId}` : (isPlainShell ? 'Plain shell mode' : 'New session'));
                 console.log('🤖 Provider:', isPlainShell ? 'plain-shell' : provider);
                 if (initialCommand) {
@@ -1686,12 +1941,12 @@ function handleShellConnection(ws) {
                 // First send a welcome message
                 let welcomeMsg;
                 if (isPlainShell) {
-                    welcomeMsg = `\x1b[36mStarting terminal in: ${projectPath}\x1b[0m\r\n`;
+                    welcomeMsg = `\x1b[36mStarting terminal in: ${authorizedProjectPath}\x1b[0m\r\n`;
                 } else {
                     const providerName = provider === 'cursor' ? 'Cursor' : (provider === 'codex' ? 'Codex' : (provider === 'gemini' ? 'Gemini' : 'Claude'));
                     welcomeMsg = hasSession ?
-                        `\x1b[36mResuming ${providerName} session ${sessionId} in: ${projectPath}\x1b[0m\r\n` :
-                        `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`;
+                        `\x1b[36mResuming ${providerName} session ${sessionId} in: ${authorizedProjectPath}\x1b[0m\r\n` :
+                        `\x1b[36mStarting new ${providerName} session in: ${authorizedProjectPath}\x1b[0m\r\n`;
                 }
 
                 ws.send(JSON.stringify({
@@ -1705,23 +1960,23 @@ function handleShellConnection(ws) {
                     if (isPlainShell) {
                         // Plain shell mode - just run the initial command in the project directory
                         if (os.platform() === 'win32') {
-                            shellCommand = `Set-Location -Path "${projectPath}"; ${initialCommand}`;
+                            shellCommand = `Set-Location -Path "${authorizedProjectPath}"; ${initialCommand}`;
                         } else {
-                            shellCommand = `cd "${projectPath}" && ${initialCommand}`;
+                            shellCommand = `cd "${authorizedProjectPath}" && ${initialCommand}`;
                         }
                     } else if (provider === 'cursor') {
                         // Use cursor-agent command
                         if (os.platform() === 'win32') {
                             if (hasSession && sessionId) {
-                                shellCommand = `Set-Location -Path "${projectPath}"; cursor-agent --resume="${sessionId}"`;
+                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; cursor-agent --resume="${sessionId}"`;
                             } else {
-                                shellCommand = `Set-Location -Path "${projectPath}"; cursor-agent`;
+                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; cursor-agent`;
                             }
                         } else {
                             if (hasSession && sessionId) {
-                                shellCommand = `cd "${projectPath}" && cursor-agent --resume="${sessionId}"`;
+                                shellCommand = `cd "${authorizedProjectPath}" && cursor-agent --resume="${sessionId}"`;
                             } else {
-                                shellCommand = `cd "${projectPath}" && cursor-agent`;
+                                shellCommand = `cd "${authorizedProjectPath}" && cursor-agent`;
                             }
                         }
 
@@ -1730,16 +1985,16 @@ function handleShellConnection(ws) {
                         if (os.platform() === 'win32') {
                             if (hasSession && sessionId) {
                                 // Try to resume session, but with fallback to a new session if it fails
-                                shellCommand = `Set-Location -Path "${projectPath}"; codex resume "${sessionId}"; if ($LASTEXITCODE -ne 0) { codex }`;
+                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; codex resume "${sessionId}"; if ($LASTEXITCODE -ne 0) { codex }`;
                             } else {
-                                shellCommand = `Set-Location -Path "${projectPath}"; codex`;
+                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; codex`;
                             }
                         } else {
                             if (hasSession && sessionId) {
                                 // Try to resume session, but with fallback to a new session if it fails
-                                shellCommand = `cd "${projectPath}" && codex resume "${sessionId}" || codex`;
+                                shellCommand = `cd "${authorizedProjectPath}" && codex resume "${sessionId}" || codex`;
                             } else {
-                                shellCommand = `cd "${projectPath}" && codex`;
+                                shellCommand = `cd "${authorizedProjectPath}" && codex`;
                             }
                         }
                     } else if (provider === 'gemini') {
@@ -1762,15 +2017,15 @@ function handleShellConnection(ws) {
 
                         if (os.platform() === 'win32') {
                             if (hasSession && resumeId) {
-                                shellCommand = `Set-Location -Path "${projectPath}"; ${command} --resume "${resumeId}"`;
+                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; ${command} --resume "${resumeId}"`;
                             } else {
-                                shellCommand = `Set-Location -Path "${projectPath}"; ${command}`;
+                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; ${command}`;
                             }
                         } else {
                             if (hasSession && resumeId) {
-                                shellCommand = `cd "${projectPath}" && ${command} --resume "${resumeId}"`;
+                                shellCommand = `cd "${authorizedProjectPath}" && ${command} --resume "${resumeId}"`;
                             } else {
-                                shellCommand = `cd "${projectPath}" && ${command}`;
+                                shellCommand = `cd "${authorizedProjectPath}" && ${command}`;
                             }
                         }
                     } else {
@@ -1779,15 +2034,15 @@ function handleShellConnection(ws) {
                         if (os.platform() === 'win32') {
                             if (hasSession && sessionId) {
                                 // Try to resume session, but with fallback to new session if it fails
-                                shellCommand = `Set-Location -Path "${projectPath}"; claude --resume ${sessionId}; if ($LASTEXITCODE -ne 0) { claude }`;
+                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; claude --resume ${sessionId}; if ($LASTEXITCODE -ne 0) { claude }`;
                             } else {
-                                shellCommand = `Set-Location -Path "${projectPath}"; ${command}`;
+                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; ${command}`;
                             }
                         } else {
                             if (hasSession && sessionId) {
-                                shellCommand = `cd "${projectPath}" && claude --resume ${sessionId} || claude`;
+                                shellCommand = `cd "${authorizedProjectPath}" && claude --resume ${sessionId} || claude`;
                             } else {
-                                shellCommand = `cd "${projectPath}" && ${command}`;
+                                shellCommand = `cd "${authorizedProjectPath}" && ${command}`;
                             }
                         }
                     }
@@ -1823,7 +2078,7 @@ function handleShellConnection(ws) {
                         ws: ws,
                         buffer: [],
                         timeoutId: null,
-                        projectPath,
+                        projectPath: authorizedProjectPath,
                         sessionId
                     });
 
@@ -2280,12 +2535,20 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
             }
             const lines = fileContent.trim().split('\n');
             let totalTokens = 0;
+            let sessionModel = null;
             let contextWindow = 200000; // Default for Codex/OpenAI
 
             // Find the latest token_count event with info (scan from end)
             for (let i = lines.length - 1; i >= 0; i--) {
                 try {
                     const entry = JSON.parse(lines[i]);
+
+                    if (!sessionModel && entry.type === 'session_meta' && entry.payload) {
+                        sessionModel = entry.payload.model || entry.payload.model_provider || null;
+                        if (sessionModel) {
+                            contextWindow = getCodexContextWindow(sessionModel);
+                        }
+                    }
 
                     // Codex stores token info in event_msg with type: "token_count"
                     if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
@@ -2333,7 +2596,6 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
         if (rel.startsWith('..') || path.isAbsolute(rel)) {
             return res.status(400).json({ error: 'Invalid path' });
         }
-
         // Read and parse the JSONL file
         let fileContent;
         try {
@@ -2347,7 +2609,7 @@ app.get('/api/projects/:projectName/sessions/:sessionId/token-usage', authentica
         const lines = fileContent.trim().split('\n');
 
         const parsedContextWindow = parseInt(process.env.CONTEXT_WINDOW, 10);
-        const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160000;
+        const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 1000000;
         let inputTokens = 0;
         let cacheCreationTokens = 0;
         let cacheReadTokens = 0;
@@ -2424,16 +2686,18 @@ function permToRwx(perm) {
     return r + w + x;
 }
 
-async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true) {
+async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true, permissionSource = null) {
     // Using fsPromises from import
     const items = [];
+    const permissions = getPermissionSource(permissionSource);
 
     try {
         const entries = await fsPromises.readdir(dirPath, { withFileTypes: true });
 
         for (const entry of entries) {
-            // Debug: log all entries including hidden files
-
+            if (!showHidden && entry.name.startsWith('.')) {
+                continue;
+            }
 
             // Skip heavy build directories and VCS directories
             if (entry.name === 'node_modules' ||
@@ -2444,15 +2708,23 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
                 entry.name === '.hg') continue;
 
             const itemPath = path.join(dirPath, entry.name);
+            const permissionCheck = await authorizeResolvedPath(itemPath, permissions, {
+                allowAncestorMatch: true,
+            });
+            if (!permissionCheck.allowed) {
+                continue;
+            }
+
+            const resolvedItemPath = permissionCheck.resolvedPath;
             const item = {
                 name: entry.name,
-                path: itemPath,
+                path: resolvedItemPath,
                 type: entry.isDirectory() ? 'directory' : 'file'
             };
 
             // Get file stats for additional metadata
             try {
-                const stats = await fsPromises.stat(itemPath);
+                const stats = await fsPromises.stat(resolvedItemPath);
                 item.size = stats.size;
                 item.modified = stats.mtime.toISOString();
 
@@ -2476,7 +2748,7 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
                 try {
                     // Check if we can access the directory before trying to read it
                     await fsPromises.access(item.path, fs.constants.R_OK);
-                    item.children = await getFileTree(item.path, maxDepth, currentDepth + 1, showHidden);
+                    item.children = await getFileTree(item.path, maxDepth, currentDepth + 1, showHidden, permissionSource);
                 } catch (e) {
                     // Silently skip directories we can't access (permission denied, etc.)
                     item.children = [];

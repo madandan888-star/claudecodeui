@@ -154,6 +154,30 @@ pm2 startup
 pm2 save
 ```
 
+#### 单端口 PM2 部署
+
+如果您要通过 FRP、反向代理或其他远程映射方式稳定运行，推荐只启动 Express 服务，并直接由 `dist` 提供前端资源。
+
+示例:
+
+```bash
+cp .env.example .env
+# 设置 PORT=3005
+# 如有需要，也可以同时设置 VITE_CONTEXT_WINDOW / CONTEXT_WINDOW
+
+npm install
+npm run build
+pm2 start npm --name claudecodeui --cwd /path/to/claudecodeui -- run server
+pm2 save
+```
+
+说明:
+
+- 如果您的 FRP 已映射到 `3005`，就固定使用 `PORT=3005`
+- 这种模式不要运行 `npm run dev`
+- 这种模式不需要单独启动 `5173`
+- FRP 或反向代理应直接转发到 `3005`
+
 
 ### 本地开发安装
 

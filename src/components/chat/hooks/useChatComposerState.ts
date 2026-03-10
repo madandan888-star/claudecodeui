@@ -11,7 +11,7 @@ import type {
 } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { authenticatedFetch } from '../../../utils/api';
-import { thinkingModes } from '../constants/thinkingModes';
+import { DEFAULT_THINKING_MODE, thinkingModes } from '../constants/thinkingModes';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import { safeLocalStorage } from '../utils/chatStorage';
 import type {
@@ -82,6 +82,20 @@ const createFakeSubmitEvent = () => {
 const isTemporarySessionId = (sessionId: string | null | undefined) =>
   Boolean(sessionId && sessionId.startsWith('new-session-'));
 
+const mapGeminiPermissionMode = (mode: PermissionMode | string): string => {
+  switch (mode) {
+    case 'acceptEdits':
+      return 'auto_edit';
+    case 'bypassPermissions':
+      return 'yolo';
+    default:
+      return mode;
+  }
+};
+
+const getThinkingModeConfig = (modeId: string) =>
+  thinkingModes.find((mode) => mode.id === modeId) || thinkingModes[thinkingModes.length - 1];
+
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -123,7 +137,7 @@ export function useChatComposerState({
   const [uploadingImages, setUploadingImages] = useState<Map<string, number>>(new Map());
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
-  const [thinkingMode, setThinkingMode] = useState('none');
+  const [thinkingMode, setThinkingMode] = useState(DEFAULT_THINKING_MODE);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHighlightRef = useRef<HTMLDivElement>(null);
@@ -501,8 +515,8 @@ export function useChatComposerState({
       }
 
       let messageContent = currentInput;
-      const selectedThinkingMode = thinkingModes.find((mode: { id: string; prefix?: string }) => mode.id === thinkingMode);
-      if (selectedThinkingMode && selectedThinkingMode.prefix) {
+      const selectedThinkingMode = getThinkingModeConfig(thinkingMode);
+      if (provider === 'claude' && selectedThinkingMode.prefix) {
         messageContent = `${selectedThinkingMode.prefix}: ${currentInput}`;
       }
 
@@ -631,6 +645,7 @@ export function useChatComposerState({
             resume: Boolean(effectiveSessionId),
             model: codexModel,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
+            modelReasoningEffort: selectedThinkingMode.codexReasoningEffort,
           },
         });
       } else if (provider === 'gemini') {
@@ -644,7 +659,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: geminiModel,
-            permissionMode,
+            permissionMode: mapGeminiPermissionMode(permissionMode),
             toolsSettings,
           },
         });
@@ -672,7 +687,7 @@ export function useChatComposerState({
       setUploadingImages(new Map());
       setImageErrors(new Map());
       setIsTextareaExpanded(false);
-      setThinkingMode('none');
+      setThinkingMode(DEFAULT_THINKING_MODE);
 
       if (textareaRef.current) {
         textareaRef.current.style.height = 'auto';

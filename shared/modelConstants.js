@@ -49,7 +49,7 @@ export const CURSOR_MODELS = {
     { value: "grok", label: "Grok" },
   ],
 
-  DEFAULT: "gpt-5-3-codex",
+  DEFAULT: "gpt-5.3-codex",
 };
 
 /**
@@ -90,3 +90,13 @@ export const GEMINI_MODELS = {
 
   DEFAULT: "gemini-2.5-flash",
 };
+
+export function getCodexContextWindow(model) {
+  const normalizedModel = String(model || '').trim().toLowerCase();
+
+  if (normalizedModel === 'gpt-5.4' || normalizedModel === 'gpt-5.4-codex') {
+    return 1_000_000;
+  }
+
+  return 200_000;
+}

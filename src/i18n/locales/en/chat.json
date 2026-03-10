@@ -136,7 +136,7 @@
   "thinkingMode": {
     "selector": {
       "title": "Thinking Mode",
-      "description": "Extended thinking gives Claude more time to evaluate alternatives",
+      "description": "Extended thinking gives the model more time to evaluate alternatives",
       "active": "Active",
       "tip": "Higher thinking modes take more time but provide more thorough analysis"
     },

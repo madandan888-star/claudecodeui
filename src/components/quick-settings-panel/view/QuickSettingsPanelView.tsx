@@ -9,8 +9,16 @@ import QuickSettingsContent from './QuickSettingsContent';
 import QuickSettingsHandle from './QuickSettingsHandle';
 import QuickSettingsPanelHeader from './QuickSettingsPanelHeader';
 
-export default function QuickSettingsPanelView() {
-  const [isOpen, setIsOpen] = useState(false);
+type QuickSettingsPanelViewProps = {
+  isOpen?: boolean;
+  onOpenChange?: (nextOpen: boolean) => void;
+};
+
+export default function QuickSettingsPanelView({
+  isOpen: controlledIsOpen,
+  onOpenChange,
+}: QuickSettingsPanelViewProps) {
+  const [internalIsOpen, setInternalIsOpen] = useState(false);
   const { isMobile } = useDeviceSettings({ trackPWA: false });
   const { isDarkMode } = useTheme();
   const { preferences, setPreference } = useUiPreferences();
@@ -20,6 +28,22 @@ export default function QuickSettingsPanelView() {
     startDrag,
     consumeSuppressedClick,
   } = useQuickSettingsDrag({ isMobile });
+
+  const isControlled = typeof controlledIsOpen === 'boolean';
+  const isOpen = isControlled ? controlledIsOpen : internalIsOpen;
+
+  const setIsOpen = useCallback(
+    (nextOpen: boolean | ((previous: boolean) => boolean)) => {
+      const resolvedOpen = typeof nextOpen === 'function' ? nextOpen(isOpen) : nextOpen;
+
+      if (!isControlled) {
+        setInternalIsOpen(resolvedOpen);
+      }
+
+      onOpenChange?.(resolvedOpen);
+    },
+    [isControlled, isOpen, onOpenChange],
+  );
 
   const quickSettingsPreferences = useMemo<QuickSettingsPreferences>(() => ({
     autoExpandTools: preferences.autoExpandTools,
@@ -52,19 +76,21 @@ export default function QuickSettingsPanelView() {
 
       setIsOpen((previous) => !previous);
     },
-    [consumeSuppressedClick],
+    [consumeSuppressedClick, setIsOpen],
   );
 
   return (
     <>
-      <QuickSettingsHandle
-        isOpen={isOpen}
-        isDragging={isDragging}
-        style={handleStyle}
-        onClick={handleToggleFromHandle}
-        onMouseDown={startDrag}
-        onTouchStart={startDrag}
-      />
+      {!isMobile && (
+        <QuickSettingsHandle
+          isOpen={isOpen}
+          isDragging={isDragging}
+          style={handleStyle}
+          onClick={handleToggleFromHandle}
+          onMouseDown={startDrag}
+          onTouchStart={startDrag}
+        />
+      )}
 
       <div
         className={`fixed right-0 top-0 z-40 h-full w-64 transform border-l border-border bg-background shadow-xl transition-transform duration-150 ease-out ${isOpen ? 'translate-x-0' : 'translate-x-full'} ${isMobile ? 'h-screen' : ''}`}

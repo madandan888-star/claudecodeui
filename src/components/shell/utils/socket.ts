@@ -3,18 +3,20 @@ import type { ShellIncomingMessage, ShellOutgoingMessage } from '../types/types'
 
 export function getShellWebSocketUrl(): string | null {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-
-  if (IS_PLATFORM) {
-    return `${protocol}//${window.location.host}/shell`;
-  }
-
   const token = localStorage.getItem('auth-token');
-  if (!token) {
+
+  if (!token && !IS_PLATFORM) {
     console.error('No authentication token found for Shell WebSocket connection');
     return null;
   }
 
-  return `${protocol}//${window.location.host}/shell?token=${encodeURIComponent(token)}`;
+  const params = new URLSearchParams();
+  if (token) {
+    params.set('token', token);
+  }
+
+  const query = params.toString();
+  return `${protocol}//${window.location.host}/shell${query ? `?${query}` : ''}`;
 }
 
 export function parseShellMessage(payload: string): ShellIncomingMessage | null {

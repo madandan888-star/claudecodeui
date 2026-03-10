@@ -42,7 +42,6 @@ export type MainContentProps = {
   latestMessage: unknown;
   isConnected?: boolean;
   isMobile: boolean;
-  onMenuClick: () => void;
   isLoading: boolean;
   onInputFocusChange: (focused: boolean) => void;
   onSessionActive: SessionLifecycleHandler;
@@ -62,19 +61,17 @@ export type MainContentHeaderProps = {
   selectedProject: Project;
   selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
-  isMobile: boolean;
-  onMenuClick: () => void;
 };
 
 export type MainContentStateViewProps = {
   mode: 'loading' | 'empty';
   isMobile: boolean;
-  onMenuClick: () => void;
 };
 
 export type MobileMenuButtonProps = {
   onMenuClick: () => void;
   compact?: boolean;
+  floating?: boolean;
 };
 
 export type TaskMasterPanelProps = {

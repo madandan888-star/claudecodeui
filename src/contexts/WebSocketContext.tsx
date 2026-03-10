@@ -21,9 +21,15 @@ export const useWebSocket = () => {
 
 const buildWebSocketUrl = (token: string | null) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  if (IS_PLATFORM) return `${protocol}//${window.location.host}/ws`; // Platform mode: Use same domain as the page (goes through proxy)
-  if (!token) return null;
-  return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`; // OSS mode: Use same host:port that served the page
+  if (!token && !IS_PLATFORM) return null;
+
+  const params = new URLSearchParams();
+  if (token) {
+    params.set('token', token);
+  }
+
+  const query = params.toString();
+  return `${protocol}//${window.location.host}/ws${query ? `?${query}` : ''}`;
 };
 
 const useWebSocketProviderState = (): WebSocketContextType => {

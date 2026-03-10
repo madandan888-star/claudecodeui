@@ -645,7 +645,7 @@ class ResponseCollector {
  *                                       'gemini-3-pro', 'composer-1', 'auto', 'gpt-5.1', 'gpt-5.1-high',
  *                                       'gpt-5.1-codex', 'gpt-5.1-codex-high', 'gpt-5.1-codex-max',
  *                                       'gpt-5.1-codex-max-high', 'opus-4.1', 'grok', and thinking variants
- *                        Codex models: 'gpt-5.2' (default), 'gpt-5.1-codex-max', 'o3', 'o4-mini'
+ *                        Codex models: 'gpt-5.4', 'gpt-5.3-codex' (default), 'gpt-5.2', 'gpt-5.1-codex-max', 'o3', 'o4-mini'
  *
  * @param {boolean} cleanup - (Optional) Auto-cleanup project directory after completion.
  *                           Default: true

@@ -98,6 +98,9 @@ type CodexSettingsStorage = {
 
 type ActiveLoginProvider = AgentProvider | '';
 
+const DEFAULT_CODEX_PERMISSION_MODE: CodexPermissionMode = 'bypassPermissions';
+const DEFAULT_GEMINI_PERMISSION_MODE: GeminiPermissionMode = 'yolo';
+
 const KNOWN_MAIN_TABS: SettingsMainTab[] = ['agents', 'appearance', 'git', 'api', 'tasks', 'plugins'];
 
 const normalizeMainTab = (tab: string): SettingsMainTab => {
@@ -130,7 +133,15 @@ const toCodexPermissionMode = (value: unknown): CodexPermissionMode => {
     return value;
   }
 
-  return 'default';
+  return DEFAULT_CODEX_PERMISSION_MODE;
+};
+
+const toGeminiPermissionMode = (value: unknown): GeminiPermissionMode => {
+  if (value === 'default' || value === 'auto_edit' || value === 'yolo') {
+    return value;
+  }
+
+  return DEFAULT_GEMINI_PERMISSION_MODE;
 };
 
 const readCodeEditorSettings = (): CodeEditorSettingsState => ({
@@ -205,8 +216,8 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
   const [cursorPermissions, setCursorPermissions] = useState<CursorPermissionsState>(() => (
     createEmptyCursorPermissions()
   ));
-  const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>('default');
-  const [geminiPermissionMode, setGeminiPermissionMode] = useState<GeminiPermissionMode>('default');
+  const [codexPermissionMode, setCodexPermissionMode] = useState<CodexPermissionMode>(DEFAULT_CODEX_PERMISSION_MODE);
+  const [geminiPermissionMode, setGeminiPermissionMode] = useState<GeminiPermissionMode>(DEFAULT_GEMINI_PERMISSION_MODE);
 
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [cursorMcpServers, setCursorMcpServers] = useState<McpServer[]>([]);
@@ -669,7 +680,7 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
         localStorage.getItem('gemini-settings'),
         {},
       );
-      setGeminiPermissionMode(savedGeminiSettings.permissionMode || 'default');
+      setGeminiPermissionMode(toGeminiPermissionMode(savedGeminiSettings.permissionMode));
 
       await Promise.all([
         fetchMcpServers(),
@@ -680,7 +691,8 @@ export function useSettingsController({ isOpen, initialTab, projects, onClose }:
       console.error('Error loading settings:', error);
       setClaudePermissions(createEmptyClaudePermissions());
       setCursorPermissions(createEmptyCursorPermissions());
-      setCodexPermissionMode('default');
+      setCodexPermissionMode(DEFAULT_CODEX_PERMISSION_MODE);
+      setGeminiPermissionMode(DEFAULT_GEMINI_PERMISSION_MODE);
       setProjectSortOrder('name');
     }
   }, [fetchCodexMcpServers, fetchCursorMcpServers, fetchMcpServers]);

@@ -334,9 +334,9 @@ function extractTokenBudget(resultMessage) {
   // portions of inputTokens served from cache, so must NOT be added again.
   const totalUsed = inputTokens + outputTokens;
 
-  // Use configured context window budget from environment (default 160000)
+  // Use configured context window budget from environment (default 1000000)
   // This is the user's budget limit, not the model's context window
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW) || 160000;
+  const contextWindow = parseInt(process.env.CONTEXT_WINDOW) || 1000000;
 
   console.log(`Token calculation: input=${inputTokens}, output=${outputTokens}, cacheRead=${cacheReadTokens}, cacheCreation=${cacheCreationTokens}, total=${totalUsed}/${contextWindow}`);
 

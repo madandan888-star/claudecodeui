@@ -118,7 +118,7 @@
   "thinkingMode": {
     "selector": {
       "title": "思考模式",
-      "description": "扩展思考给 Claude 更多时间来评估替代方案",
+      "description": "扩展思考会给模型更多时间来评估替代方案",
       "active": "激活",
       "tip": "更高的思考模式需要更多时间，但提供更彻底的分析"
     },

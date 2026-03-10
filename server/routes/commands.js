@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import matter from 'gray-matter';
-import { CLAUDE_MODELS, CURSOR_MODELS, CODEX_MODELS } from '../../shared/modelConstants.js';
+import { CLAUDE_MODELS, CURSOR_MODELS, CODEX_MODELS, getCodexContextWindow } from '../../shared/modelConstants.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -223,10 +223,12 @@ Custom commands can be created in:
     const used = Number(tokenUsage.used ?? tokenUsage.totalUsed ?? tokenUsage.total_tokens ?? 0) || 0;
     const total =
       Number(
-        tokenUsage.total ??
+          tokenUsage.total ??
           tokenUsage.contextWindow ??
-          parseInt(process.env.CONTEXT_WINDOW || '160000', 10),
-      ) || 160000;
+          (provider === 'codex'
+            ? getCodexContextWindow(model)
+            : parseInt(process.env.CONTEXT_WINDOW || '1000000', 10)),
+      ) || 1000000;
     const percentage = total > 0 ? Number(((used / total) * 100).toFixed(1)) : 0;
 
     const inputTokensRaw =

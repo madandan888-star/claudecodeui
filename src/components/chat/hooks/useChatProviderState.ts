@@ -4,16 +4,85 @@ import { CLAUDE_MODELS, CODEX_MODELS, CURSOR_MODELS, GEMINI_MODELS } from '../..
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type { ProjectSession, SessionProvider } from '../../../types/app';
 
+const DEFAULT_PERMISSION_MODE: PermissionMode = 'bypassPermissions';
+
+const normalizePermissionMode = (value: string | null | undefined): PermissionMode => {
+  switch (value) {
+    case 'default':
+    case 'acceptEdits':
+    case 'bypassPermissions':
+    case 'plan':
+      return value;
+    default:
+      return DEFAULT_PERMISSION_MODE;
+  }
+};
+
+const readGlobalPermissionMode = (provider: SessionProvider): PermissionMode => {
+  if (typeof window === 'undefined') {
+    return DEFAULT_PERMISSION_MODE;
+  }
+
+  try {
+    if (provider === 'codex') {
+      const savedCodexSettings = localStorage.getItem('codex-settings');
+      if (savedCodexSettings) {
+        const parsed = JSON.parse(savedCodexSettings) as { permissionMode?: string };
+        return normalizePermissionMode(parsed.permissionMode);
+      }
+    }
+
+    if (provider === 'gemini') {
+      const savedGeminiSettings = localStorage.getItem('gemini-settings');
+      if (savedGeminiSettings) {
+        const parsed = JSON.parse(savedGeminiSettings) as { permissionMode?: string };
+        switch (parsed.permissionMode) {
+          case 'default':
+            return 'default';
+          case 'auto_edit':
+            return 'acceptEdits';
+          case 'yolo':
+            return 'bypassPermissions';
+          default:
+            return DEFAULT_PERMISSION_MODE;
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error loading permission mode settings:', error);
+  }
+
+  return DEFAULT_PERMISSION_MODE;
+};
+
+const resolvePermissionMode = (
+  sessionId: string | null | undefined,
+  provider: SessionProvider,
+): PermissionMode => {
+  if (typeof window === 'undefined') {
+    return DEFAULT_PERMISSION_MODE;
+  }
+
+  if (sessionId) {
+    const savedMode = localStorage.getItem(`permissionMode-${sessionId}`);
+    if (savedMode) {
+      return normalizePermissionMode(savedMode);
+    }
+  }
+
+  return readGlobalPermissionMode(provider);
+};
+
 interface UseChatProviderStateArgs {
   selectedSession: ProjectSession | null;
 }
 
 export function useChatProviderState({ selectedSession }: UseChatProviderStateArgs) {
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
-  const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<SessionProvider>(() => {
     return (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
   });
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => readGlobalPermissionMode(provider));
+  const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [cursorModel, setCursorModel] = useState<string>(() => {
     return localStorage.getItem('cursor-model') || CURSOR_MODELS.DEFAULT;
   });
@@ -30,13 +99,9 @@ export function useChatProviderState({ selectedSession }: UseChatProviderStateAr
   const lastProviderRef = useRef(provider);
 
   useEffect(() => {
-    if (!selectedSession?.id) {
-      return;
-    }
-
-    const savedMode = localStorage.getItem(`permissionMode-${selectedSession.id}`);
-    setPermissionMode((savedMode as PermissionMode) || 'default');
-  }, [selectedSession?.id]);
+    const activeProvider = selectedSession?.__provider || provider;
+    setPermissionMode(resolvePermissionMode(selectedSession?.id, activeProvider));
+  }, [provider, selectedSession?.__provider, selectedSession?.id]);
 
   useEffect(() => {
     if (!selectedSession?.__provider || selectedSession.__provider === provider) {

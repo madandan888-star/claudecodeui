@@ -14,9 +14,24 @@
  */
 
 import { Codex } from '@openai/codex-sdk';
+import { getCodexContextWindow } from '../shared/modelConstants.js';
 
 // Track active sessions
 const activeCodexSessions = new Map();
+const DEFAULT_CODEX_REASONING_EFFORT = 'xhigh';
+
+function normalizeCodexReasoningEffort(value) {
+  switch (value) {
+    case 'minimal':
+    case 'low':
+    case 'medium':
+    case 'high':
+    case 'xhigh':
+      return value;
+    default:
+      return DEFAULT_CODEX_REASONING_EFFORT;
+  }
+}
 
 /**
  * Transform Codex SDK event to WebSocket message format
@@ -194,11 +209,14 @@ export async function queryCodex(command, options = {}, ws) {
     cwd,
     projectPath,
     model,
-    permissionMode = 'default'
+    permissionMode = 'default',
+    modelReasoningEffort = DEFAULT_CODEX_REASONING_EFFORT,
   } = options;
 
   const workingDirectory = cwd || projectPath || process.cwd();
   const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
+  const contextWindow = getCodexContextWindow(model);
+  const reasoningEffort = normalizeCodexReasoningEffort(modelReasoningEffort);
 
   let codex;
   let thread;
@@ -215,7 +233,8 @@ export async function queryCodex(command, options = {}, ws) {
       skipGitRepoCheck: true,
       sandboxMode,
       approvalPolicy,
-      model
+      model,
+      modelReasoningEffort: reasoningEffort,
     };
 
     // Start or resume thread
@@ -275,7 +294,7 @@ export async function queryCodex(command, options = {}, ws) {
           type: 'token-budget',
           data: {
             used: totalTokens,
-            total: 200000 // Default context window for Codex models
+            total: contextWindow
           },
           sessionId: currentSessionId
         });

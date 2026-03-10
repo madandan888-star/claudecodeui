@@ -67,6 +67,7 @@ import { open } from 'sqlite';
 import os from 'os';
 import sessionManager from './sessionManager.js';
 import { applyCustomSessionNames } from './database/db.js';
+import { getCodexContextWindow } from '../shared/modelConstants.js';
 
 // Import TaskMaster detection functions
 async function detectTaskMasterFolder(projectPath) {
@@ -1600,31 +1601,51 @@ async function parseCodexSessionFile(filePath) {
   }
 }
 
+async function findCodexSessionFile(sessionId) {
+  const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
+
+  const searchDirectory = async (dir) => {
+    try {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          const nestedResult = await searchDirectory(fullPath);
+          if (nestedResult) {
+            return nestedResult;
+          }
+        } else if (entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
+          return fullPath;
+        }
+      }
+    } catch (error) {
+      // Skip directories we can't read
+    }
+
+    return null;
+  };
+
+  return searchDirectory(codexSessionsDir);
+}
+
+async function getCodexSessionProjectPath(sessionId) {
+  const sessionFilePath = await findCodexSessionFile(sessionId);
+  if (!sessionFilePath) {
+    return null;
+  }
+
+  const sessionData = await parseCodexSessionFile(sessionFilePath);
+  if (!sessionData || sessionData.id !== sessionId || !sessionData.cwd) {
+    return null;
+  }
+
+  return sessionData.cwd;
+}
+
 // Get messages for a specific Codex session
 async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
   try {
-    const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
-
-    // Find the session file by searching for the session ID
-    const findSessionFile = async (dir) => {
-      try {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            const found = await findSessionFile(fullPath);
-            if (found) return found;
-          } else if (entry.name.includes(sessionId) && entry.name.endsWith('.jsonl')) {
-            return fullPath;
-          }
-        }
-      } catch (error) {
-        // Skip directories we can't read
-      }
-      return null;
-    };
-
-    const sessionFilePath = await findSessionFile(codexSessionsDir);
+    const sessionFilePath = await findCodexSessionFile(sessionId);
 
     if (!sessionFilePath) {
       console.warn(`Codex session file not found for session ${sessionId}`);
@@ -1633,6 +1654,7 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
 
     const messages = [];
     let tokenUsage = null;
+    let sessionModel = null;
     const fileStream = fsSync.createReadStream(sessionFilePath);
     const rl = readline.createInterface({
       input: fileStream,
@@ -1661,13 +1683,17 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
         try {
           const entry = JSON.parse(line);
 
+          if (entry.type === 'session_meta' && entry.payload) {
+            sessionModel = entry.payload.model || entry.payload.model_provider || sessionModel;
+          }
+
           // Extract token usage from token_count events (keep latest)
           if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
             const info = entry.payload.info;
             if (info.total_token_usage) {
               tokenUsage = {
                 used: info.total_token_usage.total_tokens || 0,
-                total: info.model_context_window || 200000
+                total: info.model_context_window || getCodexContextWindow(sessionModel)
               };
             }
           }
@@ -1816,6 +1842,13 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
       }
     }
 
+    if (!tokenUsage && sessionModel) {
+      tokenUsage = {
+        used: 0,
+        total: getCodexContextWindow(sessionModel)
+      };
+    }
+
     // Sort by timestamp
     messages.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
 
@@ -1848,30 +1881,11 @@ async function getCodexSessionMessages(sessionId, limit = null, offset = 0) {
 
 async function deleteCodexSession(sessionId) {
   try {
-    const codexSessionsDir = path.join(os.homedir(), '.codex', 'sessions');
-
-    const findJsonlFiles = async (dir) => {
-      const files = [];
-      try {
-        const entries = await fs.readdir(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          if (entry.isDirectory()) {
-            files.push(...await findJsonlFiles(fullPath));
-          } else if (entry.name.endsWith('.jsonl')) {
-            files.push(fullPath);
-          }
-        }
-      } catch (error) { }
-      return files;
-    };
-
-    const jsonlFiles = await findJsonlFiles(codexSessionsDir);
-
-    for (const filePath of jsonlFiles) {
-      const sessionData = await parseCodexSessionFile(filePath);
+    const sessionFilePath = await findCodexSessionFile(sessionId);
+    if (sessionFilePath) {
+      const sessionData = await parseCodexSessionFile(sessionFilePath);
       if (sessionData && sessionData.id === sessionId) {
-        await fs.unlink(filePath);
+        await fs.unlink(sessionFilePath);
         return true;
       }
     }
@@ -2567,6 +2581,7 @@ export {
   extractProjectDirectory,
   clearProjectDirectoryCache,
   getCodexSessions,
+  getCodexSessionProjectPath,
   getCodexSessionMessages,
   deleteCodexSession,
   getGeminiCliSessions,

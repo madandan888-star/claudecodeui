@@ -14,6 +14,7 @@ import type {
 import { parseJsonSafely, resolveApiErrorMessage } from '../utils';
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+const ALLOWED_PROJECTS_STORAGE_KEY = 'allowed-projects';
 
 const readStoredToken = (): string | null => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
 
@@ -21,8 +22,17 @@ const persistToken = (token: string) => {
   localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
 };
 
+const persistAllowedProjects = (allowedProjects: unknown) => {
+  if (allowedProjects === undefined) {
+    return;
+  }
+
+  localStorage.setItem(ALLOWED_PROJECTS_STORAGE_KEY, JSON.stringify(allowedProjects ?? []));
+};
+
 const clearStoredToken = () => {
   localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  localStorage.removeItem(ALLOWED_PROJECTS_STORAGE_KEY);
 };
 
 export function useAuth(): AuthContextValue {
@@ -54,6 +64,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
     clearStoredToken();
   }, []);
 
+  const applyPlatformFallbackUser = useCallback(() => {
+    setUser({ username: 'platform-user' });
+    setNeedsSetup(false);
+  }, []);
+
   const checkOnboardingStatus = useCallback(async () => {
     try {
       const response = await api.user.onboardingStatus();
@@ -73,6 +88,40 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const refreshOnboardingStatus = useCallback(async () => {
     await checkOnboardingStatus();
   }, [checkOnboardingStatus]);
+
+  const handleYpbotLogin = useCallback(
+    async (ypbotToken: string): Promise<boolean> => {
+      try {
+        const response = await fetch('/api/auth/ypbot-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: ypbotToken }),
+        });
+        const payload = await parseJsonSafely<
+          AuthSessionPayload & {
+            allowedProjects?: unknown;
+          }
+        >(response);
+
+        if (!response.ok || !payload?.token || !payload.user) {
+          console.error('[Auth] ypbot token exchange failed:', response.status);
+          return false;
+        }
+
+        setSession(payload.user, payload.token);
+        persistAllowedProjects(payload.allowedProjects);
+        setNeedsSetup(false);
+        const cleanUrl = window.location.pathname + window.location.hash;
+        window.history.replaceState({}, document.title, cleanUrl);
+        await checkOnboardingStatus();
+        return true;
+      } catch (caughtError) {
+        console.error('[Auth] ypbot login error:', caughtError);
+        return false;
+      }
+    },
+    [checkOnboardingStatus, setSession],
+  );
 
   const checkAuthStatus = useCallback(async () => {
     try {
@@ -116,17 +165,50 @@ export function AuthProvider({ children }: AuthProviderProps) {
   }, [checkOnboardingStatus, clearSession, token]);
 
   useEffect(() => {
-    if (IS_PLATFORM) {
-      setUser({ username: 'platform-user' });
-      setNeedsSetup(false);
-      void checkOnboardingStatus().finally(() => {
-        setIsLoading(false);
-      });
-      return;
-    }
+    const ypbotToken = new URLSearchParams(window.location.search).get('ypbot_token');
 
-    void checkAuthStatus();
-  }, [checkAuthStatus, checkOnboardingStatus]);
+    const initializeAuth = async () => {
+      if (ypbotToken) {
+        const loggedIn = await handleYpbotLogin(ypbotToken);
+        if (loggedIn) {
+          setIsLoading(false);
+          return;
+        }
+      }
+
+      if (IS_PLATFORM) {
+        try {
+          const existingToken = readStoredToken();
+          if (existingToken) {
+            const userResponse = await api.auth.user();
+            if (userResponse.ok) {
+              const userPayload = await parseJsonSafely<AuthUserPayload>(userResponse);
+              if (userPayload?.user) {
+                setUser(userPayload.user);
+                setNeedsSetup(false);
+                await checkOnboardingStatus();
+                return;
+              }
+            }
+            clearSession();
+          }
+
+          applyPlatformFallbackUser();
+          await checkOnboardingStatus();
+        } catch (caughtError) {
+          console.error('[Auth] Platform init error:', caughtError);
+          applyPlatformFallbackUser();
+        } finally {
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      await checkAuthStatus();
+    };
+
+    void initializeAuth();
+  }, [applyPlatformFallbackUser, checkAuthStatus, checkOnboardingStatus, clearSession, handleYpbotLogin]);
 
   const login = useCallback<AuthContextValue['login']>(
     async (username, password) => {

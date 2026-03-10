@@ -37,7 +37,6 @@ function MainContent({
   latestMessage,
   isConnected,
   isMobile,
-  onMenuClick,
   isLoading,
   onInputFocusChange,
   onSessionActive,
@@ -89,11 +88,11 @@ function MainContent({
   }, [shouldShowTasksTab, activeTab, setActiveTab]);
 
   if (isLoading) {
-    return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
+    return <MainContentStateView mode="loading" isMobile={isMobile} />;
   }
 
   if (!selectedProject) {
-    return <MainContentStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />;
+    return <MainContentStateView mode="empty" isMobile={isMobile} />;
   }
 
   return (
@@ -104,8 +103,6 @@ function MainContent({
         selectedProject={selectedProject}
         selectedSession={selectedSession}
         shouldShowTasksTab={shouldShowTasksTab}
-        isMobile={isMobile}
-        onMenuClick={onMenuClick}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">

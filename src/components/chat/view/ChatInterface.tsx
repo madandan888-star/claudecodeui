@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
@@ -43,6 +43,7 @@ function ChatInterface({
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { t } = useTranslation('chat');
+  const [isQuickSettingsOpen, setIsQuickSettingsOpen] = useState(false);
 
   const streamBufferRef = useRef('');
   const streamTimerRef = useRef<number | null>(null);
@@ -344,9 +345,7 @@ function ChatInterface({
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
-          claudeStatus={claudeStatus}
           isLoading={isLoading}
-          onAbortSession={handleAbortSession}
           provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
@@ -360,6 +359,8 @@ function ChatInterface({
           isUserScrolledUp={isUserScrolledUp}
           hasMessages={chatMessages.length > 0}
           onScrollToBottom={scrollToBottomAndReset}
+          isQuickSettingsOpen={isQuickSettingsOpen}
+          onToggleQuickSettings={() => setIsQuickSettingsOpen((previous) => !previous)}
           onSubmit={handleSubmit}
           isDragActive={isDragActive}
           attachedImages={attachedImages}
@@ -411,7 +412,10 @@ function ChatInterface({
         />
       </div>
 
-      <QuickSettingsPanel />
+      <QuickSettingsPanel
+        isOpen={isQuickSettingsOpen}
+        onOpenChange={setIsQuickSettingsOpen}
+      />
     </>
   );
 }

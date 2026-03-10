@@ -115,7 +115,7 @@
   "thinkingMode": {
     "selector": {
       "title": "思考モード",
-      "description": "拡張思考によりClaudeがより多くの選択肢を検討できます",
+      "description": "拡張思考によりモデルがより多くの選択肢を検討できます",
       "active": "有効",
       "tip": "高い思考モードは時間がかかりますが、より深い分析が得られます"
     },

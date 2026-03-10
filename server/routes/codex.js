@@ -4,10 +4,56 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
 import TOML from '@iarna/toml';
-import { getCodexSessions, getCodexSessionMessages, deleteCodexSession } from '../projects.js';
+import {
+  getCodexSessions,
+  getCodexSessionMessages,
+  getCodexSessionProjectPath,
+  deleteCodexSession,
+} from '../projects.js';
 import { applyCustomSessionNames, sessionNamesDb } from '../database/db.js';
+import { hasProjectAccess, resolvePathForPermissionCheck } from '../utils/projectPermissions.js';
 
 const router = express.Router();
+
+router.use(async (req, res, next) => {
+  const { projectPath } = req.query;
+  if (typeof projectPath !== 'string' || !projectPath.trim()) {
+    return next();
+  }
+
+  try {
+    const resolvedProjectPath = await resolvePathForPermissionCheck(projectPath.trim());
+    if (!hasProjectAccess(resolvedProjectPath, req)) {
+      return res.status(403).json({ success: false, error: 'Project access denied' });
+    }
+
+    req.authorizedProjectPath = resolvedProjectPath;
+    next();
+  } catch (error) {
+    console.error('Codex project authorization error:', error);
+    res.status(403).json({ success: false, error: 'Project access denied' });
+  }
+});
+
+router.use('/sessions/:sessionId', async (req, res, next) => {
+  try {
+    const projectPath = await getCodexSessionProjectPath(req.params.sessionId);
+    if (!projectPath) {
+      return res.status(404).json({ success: false, error: 'Codex session not found' });
+    }
+
+    const resolvedProjectPath = await resolvePathForPermissionCheck(projectPath);
+    if (!hasProjectAccess(resolvedProjectPath, req)) {
+      return res.status(403).json({ success: false, error: 'Project access denied' });
+    }
+
+    req.authorizedProjectPath = resolvedProjectPath;
+    next();
+  } catch (error) {
+    console.error('Codex session authorization error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
 
 function createCliResponder(res) {
   let responded = false;
@@ -53,7 +99,7 @@ router.get('/config', async (req, res) => {
 
 router.get('/sessions', async (req, res) => {
   try {
-    const { projectPath } = req.query;
+    const projectPath = req.authorizedProjectPath || req.query.projectPath;
 
     if (!projectPath) {
       return res.status(400).json({ success: false, error: 'projectPath query parameter required' });

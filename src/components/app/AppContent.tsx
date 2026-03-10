@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import Sidebar from '../sidebar/view/Sidebar';
 import MainContent from '../main-content/view/MainContent';
+import MobileMenuButton from '../main-content/view/subcomponents/MobileMenuButton';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
@@ -134,7 +135,6 @@ export default function AppContent() {
           latestMessage={latestMessage}
           isConnected={isConnected}
           isMobile={isMobile}
-          onMenuClick={() => setSidebarOpen(true)}
           isLoading={isLoadingProjects}
           onInputFocusChange={setIsInputFocused}
           onSessionActive={markSessionAsActive}
@@ -148,6 +148,17 @@ export default function AppContent() {
           externalMessageUpdate={externalMessageUpdate}
         />
       </div>
+
+      {isMobile && !sidebarOpen && (
+        <div
+          className="pointer-events-none fixed top-1/2 z-40 -translate-y-1/2"
+          style={{ left: 'env(safe-area-inset-left, 0px)' }}
+        >
+          <div className="pointer-events-auto">
+            <MobileMenuButton onMenuClick={() => setSidebarOpen(true)} floating />
+          </div>
+        </div>
+      )}
 
       {isMobile && (
         <MobileNav
