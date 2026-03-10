@@ -44,7 +44,7 @@ import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
-import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache } from './projects.js';
+import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
@@ -64,6 +64,8 @@ import cliAuthRoutes from './routes/cli-auth.js';
 import userRoutes from './routes/user.js';
 import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
+import pluginsRoutes from './routes/plugins.js';
+import { startEnabledPluginServers, stopAllPlugins } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
@@ -389,6 +391,9 @@ app.use('/api/codex', authenticateToken, codexRoutes);
 // Gemini API Routes (protected)
 app.use('/api/gemini', authenticateToken, geminiRoutes);
 
+// Plugins API Routes (protected)
+app.use('/api/plugins', authenticateToken, pluginsRoutes);
+
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
 
@@ -605,6 +610,51 @@ app.post('/api/projects/create', authenticateToken, async (req, res) => {
     } catch (error) {
         console.error('Error creating project:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Search conversations content (SSE streaming)
+app.get('/api/search/conversations', authenticateToken, async (req, res) => {
+    const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    const parsedLimit = Number.parseInt(String(req.query.limit), 10);
+    const limit = Number.isNaN(parsedLimit) ? 50 : Math.max(1, Math.min(parsedLimit, 100));
+
+    if (query.length < 2) {
+        return res.status(400).json({ error: 'Query must be at least 2 characters' });
+    }
+
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+    });
+
+    let closed = false;
+    const abortController = new AbortController();
+    req.on('close', () => { closed = true; abortController.abort(); });
+
+    try {
+        await searchConversations(query, limit, ({ projectResult, totalMatches, scannedProjects, totalProjects }) => {
+            if (closed) return;
+            if (projectResult) {
+                res.write(`event: result\ndata: ${JSON.stringify({ projectResult, totalMatches, scannedProjects, totalProjects })}\n\n`);
+            } else {
+                res.write(`event: progress\ndata: ${JSON.stringify({ totalMatches, scannedProjects, totalProjects })}\n\n`);
+            }
+        }, abortController.signal);
+        if (!closed) {
+            res.write(`event: done\ndata: {}\n\n`);
+        }
+    } catch (error) {
+        console.error('Error searching conversations:', error);
+        if (!closed) {
+            res.write(`event: error\ndata: ${JSON.stringify({ error: 'Search failed' })}\n\n`);
+        }
+    } finally {
+        if (!closed) {
+            res.end();
+        }
     }
 });
 
@@ -2488,7 +2538,20 @@ async function startServer() {
 
             // Start watching the projects folder for changes
             await setupProjectsWatcher();
+
+            // Start server-side plugin processes for enabled plugins
+            startEnabledPluginServers().catch(err => {
+                console.error('[Plugins] Error during startup:', err.message);
+            });
         });
+
+        // Clean up plugin processes on shutdown
+        const shutdownPlugins = async () => {
+            await stopAllPlugins();
+            process.exit(0);
+        };
+        process.on('SIGTERM', () => void shutdownPlugins());
+        process.on('SIGINT', () => void shutdownPlugins());
     } catch (error) {
         console.error('[ERROR] Failed to start server:', error);
         process.exit(1);
