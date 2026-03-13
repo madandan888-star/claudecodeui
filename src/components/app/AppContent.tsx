@@ -41,7 +41,7 @@ export default function AppContent() {
     setIsInputFocused,
     setShowSettings,
     openSettings,
-    fetchProjects,
+    refreshProjectsSilently,
     sidebarSharedProps,
   } = useProjectsState({
     sessionId,
@@ -52,14 +52,16 @@ export default function AppContent() {
   });
 
   useEffect(() => {
-    window.refreshProjects = fetchProjects;
+    // Expose a non-blocking refresh for chat/session flows.
+    // Full loading refreshes are still available through direct fetchProjects calls.
+    window.refreshProjects = refreshProjectsSilently;
 
     return () => {
-      if (window.refreshProjects === fetchProjects) {
+      if (window.refreshProjects === refreshProjectsSilently) {
         delete window.refreshProjects;
       }
     };
-  }, [fetchProjects]);
+  }, [refreshProjectsSilently]);
 
   useEffect(() => {
     window.openSettings = openSettings;

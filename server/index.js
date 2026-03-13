@@ -376,7 +376,7 @@ const wss = new WebSocketServer({
 // Make WebSocket server available to routes
 app.locals.wss = wss;
 
-app.use(cors());
+app.use(cors({ exposedHeaders: ['X-Refreshed-Token'] }));
 app.use(express.json({
     limit: '50mb',
     type: (req) => {
@@ -1955,50 +1955,49 @@ function handleShellConnection(ws) {
                 }));
 
                 try {
-                    // Prepare the shell command adapted to the platform and provider
+                    // Validate projectPath — resolve to absolute and verify it exists
+                    const resolvedProjectPath = path.resolve(projectPath);
+                    try {
+                        const stats = fs.statSync(resolvedProjectPath);
+                        if (!stats.isDirectory()) {
+                            throw new Error('Not a directory');
+                        }
+                    } catch (pathErr) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'Invalid project path' }));
+                        return;
+                    }
+
+                    // Validate sessionId — only allow safe characters
+                    const safeSessionIdPattern = /^[a-zA-Z0-9_.\-:]+$/;
+                    if (sessionId && !safeSessionIdPattern.test(sessionId)) {
+                        ws.send(JSON.stringify({ type: 'error', message: 'Invalid session ID' }));
+                        return;
+                    }
+
+                    // Build shell command — use cwd for project path (never interpolate into shell string)
                     let shellCommand;
                     if (isPlainShell) {
-                        // Plain shell mode - just run the initial command in the project directory
-                        if (os.platform() === 'win32') {
-                            shellCommand = `Set-Location -Path "${authorizedProjectPath}"; ${initialCommand}`;
-                        } else {
-                            shellCommand = `cd "${authorizedProjectPath}" && ${initialCommand}`;
-                        }
+                        // Plain shell mode - run the initial command in the project directory
+                        shellCommand = initialCommand;
                     } else if (provider === 'cursor') {
-                        // Use cursor-agent command
-                        if (os.platform() === 'win32') {
-                            if (hasSession && sessionId) {
-                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; cursor-agent --resume="${sessionId}"`;
-                            } else {
-                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; cursor-agent`;
-                            }
+                        if (hasSession && sessionId) {
+                            shellCommand = `cursor-agent --resume="${sessionId}"`;
                         } else {
-                            if (hasSession && sessionId) {
-                                shellCommand = `cd "${authorizedProjectPath}" && cursor-agent --resume="${sessionId}"`;
-                            } else {
-                                shellCommand = `cd "${authorizedProjectPath}" && cursor-agent`;
-                            }
+                            shellCommand = 'cursor-agent';
                         }
-
                     } else if (provider === 'codex') {
-                        // Use codex command
-                        if (os.platform() === 'win32') {
-                            if (hasSession && sessionId) {
-                                // Try to resume session, but with fallback to a new session if it fails
-                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; codex resume "${sessionId}"; if ($LASTEXITCODE -ne 0) { codex }`;
+                        // Use codex command; attempt to resume and fall back to a new session when the resume fails.
+                        if (hasSession && sessionId) {
+                            if (os.platform() === 'win32') {
+                                // PowerShell syntax for fallback
+                                shellCommand = `codex resume "${sessionId}"; if ($LASTEXITCODE -ne 0) { codex }`;
                             } else {
-                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; codex`;
+                                shellCommand = `codex resume "${sessionId}" || codex`;
                             }
                         } else {
-                            if (hasSession && sessionId) {
-                                // Try to resume session, but with fallback to a new session if it fails
-                                shellCommand = `cd "${authorizedProjectPath}" && codex resume "${sessionId}" || codex`;
-                            } else {
-                                shellCommand = `cd "${authorizedProjectPath}" && codex`;
-                            }
+                            shellCommand = 'codex';
                         }
                     } else if (provider === 'gemini') {
-                        // Use gemini command
                         const command = initialCommand || 'gemini';
                         let resumeId = sessionId;
                         if (hasSession && sessionId) {
@@ -2009,41 +2008,32 @@ function handleShellConnection(ws) {
                                 const sess = sessionManager.getSession(sessionId);
                                 if (sess && sess.cliSessionId) {
                                     resumeId = sess.cliSessionId;
+                                    // Validate the looked-up CLI session ID too
+                                    if (!safeSessionIdPattern.test(resumeId)) {
+                                        resumeId = null;
+                                    }
                                 }
                             } catch (err) {
                                 console.error('Failed to get Gemini CLI session ID:', err);
                             }
                         }
 
-                        if (os.platform() === 'win32') {
-                            if (hasSession && resumeId) {
-                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; ${command} --resume "${resumeId}"`;
-                            } else {
-                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; ${command}`;
-                            }
+                        if (hasSession && resumeId) {
+                            shellCommand = `${command} --resume "${resumeId}"`;
                         } else {
-                            if (hasSession && resumeId) {
-                                shellCommand = `cd "${authorizedProjectPath}" && ${command} --resume "${resumeId}"`;
-                            } else {
-                                shellCommand = `cd "${authorizedProjectPath}" && ${command}`;
-                            }
+                            shellCommand = command;
                         }
                     } else {
-                        // Use claude command (default) or initialCommand if provided
+                        // Claude (default provider)
                         const command = initialCommand || 'claude';
-                        if (os.platform() === 'win32') {
-                            if (hasSession && sessionId) {
-                                // Try to resume session, but with fallback to new session if it fails
-                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; claude --resume ${sessionId}; if ($LASTEXITCODE -ne 0) { claude }`;
+                        if (hasSession && sessionId) {
+                            if (os.platform() === 'win32') {
+                                shellCommand = `claude --resume "${sessionId}"; if ($LASTEXITCODE -ne 0) { claude }`;
                             } else {
-                                shellCommand = `Set-Location -Path "${authorizedProjectPath}"; ${command}`;
+                                shellCommand = `claude --resume "${sessionId}" || claude`;
                             }
                         } else {
-                            if (hasSession && sessionId) {
-                                shellCommand = `cd "${authorizedProjectPath}" && claude --resume ${sessionId} || claude`;
-                            } else {
-                                shellCommand = `cd "${authorizedProjectPath}" && ${command}`;
-                            }
+                            shellCommand = command;
                         }
                     }
 
@@ -2062,7 +2052,7 @@ function handleShellConnection(ws) {
                         name: 'xterm-256color',
                         cols: termCols,
                         rows: termRows,
-                        cwd: os.homedir(),
+                        cwd: resolvedProjectPath,
                         env: {
                             ...process.env,
                             TERM: 'xterm-256color',
