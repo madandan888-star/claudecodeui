@@ -53,15 +53,8 @@ const authenticateToken = async (req, res, next) => {
         }
       }
 
-      // Fall back to first user (original platform mode behavior)
-      const user = userDb.getFirstUser();
-      if (!user) {
-        return res.status(500).json({ error: 'Platform mode: No user found in database' });
-      }
-      req.user = user;
-      req.allowedProjects = [];
-      req.projectPermissionsMode = 'all';
-      return next();
+      // No valid token provided — require authentication
+      return res.status(401).json({ error: 'Access denied. No token provided.' });
     } catch (error) {
       console.error('Platform mode error:', error);
       return res.status(500).json({ error: 'Platform mode: Failed to fetch user' });
@@ -148,16 +141,8 @@ const authenticateWebSocket = (token) => {
         return null;
       }
     }
-    try {
-      const user = userDb.getFirstUser();
-      if (user) {
-        return { userId: user.id, username: user.username, allowedProjects: [], projectPermissionsMode: 'all' };
-      }
-      return null;
-    } catch (error) {
-      console.error('Platform mode WebSocket error:', error);
-      return null;
-    }
+    // No valid token provided — reject WebSocket connection
+    return null;
   }
 
   // Normal OSS JWT validation
