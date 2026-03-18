@@ -96,6 +96,25 @@ const mapGeminiPermissionMode = (mode: PermissionMode | string): string => {
 const getThinkingModeConfig = (modeId: string) =>
   thinkingModes.find((mode) => mode.id === modeId) || thinkingModes[thinkingModes.length - 1];
 
+const getNotificationSessionSummary = (
+  selectedSession: ProjectSession | null,
+  fallbackInput: string,
+): string | null => {
+  const sessionSummary = selectedSession?.summary || selectedSession?.name || selectedSession?.title;
+  if (typeof sessionSummary === 'string' && sessionSummary.trim()) {
+    const normalized = sessionSummary.replace(/\s+/g, ' ').trim();
+    return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+  }
+
+  const normalizedFallback = fallbackInput.replace(/\s+/g, ' ').trim();
+  if (!normalizedFallback) {
+    return null;
+  }
+
+  return normalizedFallback.length > 80 ? `${normalizedFallback.slice(0, 77)}...` : normalizedFallback;
+};
+
+
 export function useChatComposerState({
   selectedProject,
   selectedSession,
@@ -617,6 +636,7 @@ export function useChatComposerState({
 
       const toolsSettings = getToolsSettings();
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
       if (provider === 'cursor') {
         sendMessage({
@@ -630,6 +650,7 @@ export function useChatComposerState({
             resume: Boolean(effectiveSessionId),
             model: cursorModel,
             skipPermissions: toolsSettings?.skipPermissions || false,
+            sessionSummary,
             toolsSettings,
           },
         });
@@ -644,6 +665,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: codexModel,
+            sessionSummary,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
             modelReasoningEffort: selectedThinkingMode.codexReasoningEffort,
           },
@@ -659,6 +681,7 @@ export function useChatComposerState({
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: geminiModel,
+            sessionSummary,
             permissionMode: mapGeminiPermissionMode(permissionMode),
             toolsSettings,
           },
@@ -675,6 +698,7 @@ export function useChatComposerState({
             toolsSettings,
             permissionMode,
             model: claudeModel,
+            sessionSummary,
             images: uploadedImages,
           },
         });
@@ -696,6 +720,7 @@ export function useChatComposerState({
       safeLocalStorage.removeItem(`draft_input_${selectedProject.name}`);
     },
     [
+      selectedSession,
       attachedImages,
       claudeModel,
       codexModel,
@@ -712,7 +737,6 @@ export function useChatComposerState({
       resetCommandMenuState,
       scrollToBottom,
       selectedProject,
-      selectedSession?.id,
       sendMessage,
       setCanAbortSession,
       setChatMessages,
