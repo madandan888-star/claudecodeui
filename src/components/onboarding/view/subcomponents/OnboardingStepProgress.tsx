@@ -5,8 +5,8 @@ type OnboardingStepProgressProps = {
 };
 
 const onboardingSteps = [
-  { title: 'Git Configuration', icon: GitBranch, required: true },
-  { title: 'Connect Agents', icon: LogIn, required: false },
+  { title: 'Git 配置', icon: GitBranch, required: true },
+  { title: '连接 AI 助手', icon: LogIn, required: false },
 ];
 
 export default function OnboardingStepProgress({ currentStep }: OnboardingStepProgressProps) {
@@ -37,7 +37,7 @@ export default function OnboardingStepProgress({ currentStep }: OnboardingStepPr
                   <p className={`text-sm font-medium ${isActive ? 'text-foreground' : 'text-muted-foreground'}`}>
                     {step.title}
                   </p>
-                  {step.required && <span className="text-xs text-red-500">Required</span>}
+                  {step.required && <span className="text-xs text-red-500">必填</span>}
                 </div>
               </div>
 

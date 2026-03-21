@@ -24,10 +24,10 @@ export default function AgentConnectionCard({
   const containerClassName = status.authenticated ? connectedClassName : 'border-border bg-card';
 
   const statusText = status.loading
-    ? 'Checking...'
+    ? '检查中...'
     : status.authenticated
-      ? status.email || 'Connected'
-      : status.error || 'Not connected';
+      ? status.email || '已连接'
+      : status.error || '未连接';
 
   return (
     <div className={`rounded-lg border p-4 transition-colors ${containerClassName}`}>
@@ -51,7 +51,7 @@ export default function AgentConnectionCard({
             onClick={onLogin}
             className={`${loginButtonClassName} rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors`}
           >
-            Login
+            登录
           </button>
         )}
       </div>

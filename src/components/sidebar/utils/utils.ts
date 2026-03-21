@@ -1,5 +1,6 @@
 import type { TFunction } from 'i18next';
 import type { Project } from '../../../types/app';
+import { thinkingModes } from '../../chat/constants/thinkingModes';
 import type {
   AdditionalSessionsByProject,
   ProjectSortOrder,
@@ -7,6 +8,21 @@ import type {
   SessionViewModel,
   SessionWithProvider,
 } from '../types/types';
+
+// Strip thinking mode prefixes (e.g. "ultrathink: hi" → "hi") for cleaner display
+const thinkingPrefixes = thinkingModes
+  .map((m) => m.prefix)
+  .filter(Boolean)
+  .sort((a, b) => b.length - a.length); // longest first
+
+const stripThinkingPrefix = (name: string): string => {
+  for (const prefix of thinkingPrefixes) {
+    if (name.toLowerCase().startsWith(`${prefix}: `)) {
+      return name.slice(prefix.length + 2);
+    }
+  }
+  return name;
+};
 
 export const readProjectSortOrder = (): ProjectSortOrder => {
   try {
@@ -64,7 +80,8 @@ export const getSessionName = (session: SessionWithProvider, t: TFunction): stri
     return session.summary || session.name || t('projects.newSession');
   }
 
-  return session.summary || t('projects.newSession');
+  const summary = session.summary ? stripThinkingPrefix(session.summary) : null;
+  return summary || t('projects.newSession');
 };
 
 export const getSessionTime = (session: SessionWithProvider): string => {

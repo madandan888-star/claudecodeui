@@ -30,15 +30,12 @@ router.get('/git-config', authenticateToken, async (req, res) => {
     const userId = req.user.id;
     let gitConfig = userDb.getGitConfig(userId);
 
-    // If database is empty, try to get from system git config
+    // If database is empty, fall back to system git config (only for non-platform / admin users)
     if (!gitConfig || (!gitConfig.git_name && !gitConfig.git_email)) {
       const systemConfig = await getSystemGitConfig();
-
-      // If system has values, save them to database for this user
+      // Return as hint but do NOT persist — let the user confirm in onboarding
       if (systemConfig.git_name || systemConfig.git_email) {
-        userDb.updateGitConfig(userId, systemConfig.git_name, systemConfig.git_email);
         gitConfig = systemConfig;
-        console.log(`Auto-populated git config from system for user ${userId}: ${systemConfig.git_name} <${systemConfig.git_email}>`);
       }
     }
 
@@ -70,14 +67,7 @@ router.post('/git-config', authenticateToken, async (req, res) => {
     }
 
     userDb.updateGitConfig(userId, gitName, gitEmail);
-
-    try {
-      await spawnAsync('git', ['config', '--global', 'user.name', gitName]);
-      await spawnAsync('git', ['config', '--global', 'user.email', gitEmail]);
-      console.log(`Applied git config globally: ${gitName} <${gitEmail}>`);
-    } catch (gitError) {
-      console.error('Error applying git config:', gitError);
-    }
+    // Per-user DB storage only — do NOT write --global (shared server)
 
     res.json({
       success: true,

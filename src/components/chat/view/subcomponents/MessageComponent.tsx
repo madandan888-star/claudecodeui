@@ -9,10 +9,26 @@ import type {
 } from '../../types/types';
 import { formatUsageLimitText } from '../../utils/chatFormatting';
 import { getClaudePermissionSuggestion } from '../../utils/chatPermissions';
+import { thinkingModes } from '../../constants/thinkingModes';
 import type { Project } from '../../../../types/app';
 import { ToolRenderer, shouldHideToolResult } from '../../tools';
 import { Markdown } from './Markdown';
 import MessageCopyControl from './MessageCopyControl';
+
+// Strip thinking mode prefixes from user messages for cleaner display
+const thinkingPrefixes = thinkingModes
+  .map((m) => m.prefix)
+  .filter(Boolean)
+  .sort((a, b) => b.length - a.length);
+
+function stripThinkingPrefix(text: string): string {
+  for (const prefix of thinkingPrefixes) {
+    if (text.toLowerCase().startsWith(`${prefix}: `)) {
+      return text.slice(prefix.length + 2);
+    }
+  }
+  return text;
+}
 
 type DiffLine = {
   type: string;
@@ -119,7 +135,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, o
         <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
           <div className="group flex-1 rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:flex-initial sm:px-4">
             <div className="whitespace-pre-wrap break-words text-sm">
-              {message.content}
+              {message.type === 'user' ? stripThinkingPrefix(String(message.content || '')) : message.content}
             </div>
             {message.images && message.images.length > 0 && (
               <div className="mt-2 grid grid-cols-2 gap-2">

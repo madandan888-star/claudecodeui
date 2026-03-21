@@ -104,7 +104,7 @@ export function pathMatchesPermissions(targetPath, source, { allowAncestorMatch 
 export function filterProjectsByPermissions(projects, source) {
   return projects.filter((project) => {
     const projectPath = project.path || project.fullPath || project.directory;
-    return projectPath ? projectMatchesPermissions(projectPath, source) : false;
+    return projectPath ? hasProjectAccess(projectPath, source) : false;
   });
 }
 

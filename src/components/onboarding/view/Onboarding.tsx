@@ -92,6 +92,16 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
       if (payload.gitEmail) {
         setGitEmail(payload.gitEmail);
       }
+      // Auto-skip git config step if already populated (e.g. platform-managed users)
+      if (payload.gitName && payload.gitEmail) {
+        // Save git config silently, then skip to agent connections
+        await authenticatedFetch('/api/user/git-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gitName: payload.gitName, gitEmail: payload.gitEmail }),
+        });
+        setCurrentStep(1);
+      }
     } catch (caughtError) {
       console.error('Error loading git config:', caughtError);
     }
@@ -134,12 +144,12 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
     }
 
     if (!gitName.trim() || !gitEmail.trim()) {
-      setErrorMessage('Both git name and email are required.');
+      setErrorMessage('Git 用户名和邮箱均为必填项。');
       return;
     }
 
     if (!gitEmailPattern.test(gitEmail)) {
-      setErrorMessage('Please enter a valid email address.');
+      setErrorMessage('请输入有效的邮箱地址。');
       return;
     }
 
@@ -152,13 +162,13 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
       });
 
       if (!response.ok) {
-        const message = await readErrorMessageFromResponse(response, 'Failed to save git configuration');
+        const message = await readErrorMessageFromResponse(response, '保存 Git 配置失败');
         throw new Error(message);
       }
 
       setCurrentStep((previous) => previous + 1);
     } catch (caughtError) {
-      setErrorMessage(caughtError instanceof Error ? caughtError.message : 'Failed to save git configuration');
+      setErrorMessage(caughtError instanceof Error ? caughtError.message : '保存 Git 配置失败');
     } finally {
       setIsSubmitting(false);
     }
@@ -176,13 +186,13 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
     try {
       const response = await authenticatedFetch('/api/user/complete-onboarding', { method: 'POST' });
       if (!response.ok) {
-        const message = await readErrorMessageFromResponse(response, 'Failed to complete onboarding');
+        const message = await readErrorMessageFromResponse(response, '完成设置失败');
         throw new Error(message);
       }
 
       await onComplete?.();
     } catch (caughtError) {
-      setErrorMessage(caughtError instanceof Error ? caughtError.message : 'Failed to complete onboarding');
+      setErrorMessage(caughtError instanceof Error ? caughtError.message : '完成设置失败');
     } finally {
       setIsSubmitting(false);
     }
@@ -227,7 +237,7 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                 className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-muted-foreground transition-colors duration-200 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <ChevronLeft className="h-4 w-4" />
-                Previous
+                上一步
               </button>
 
               <div className="flex items-center gap-3">
@@ -240,11 +250,11 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                     {isSubmitting ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        Saving...
+                        保存中...
                       </>
                     ) : (
                       <>
-                        Next
+                        下一步
                         <ChevronRight className="h-4 w-4" />
                       </>
                     )}
@@ -258,12 +268,12 @@ export default function Onboarding({ onComplete }: OnboardingProps) {
                     {isSubmitting ? (
                       <>
                         <Loader2 className="h-4 w-4 animate-spin" />
-                        Completing...
+                        完成中...
                       </>
                     ) : (
                       <>
                         <Check className="h-4 w-4" />
-                        Complete Setup
+                        完成设置
                       </>
                     )}
                   </button>

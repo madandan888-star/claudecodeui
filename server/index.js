@@ -44,7 +44,7 @@ import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
-import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, searchConversations } from './projects.js';
+import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, setProjectDirectoryCache, searchConversations } from './projects.js';
 import { queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionActive, getActiveClaudeSDKSessions, resolveToolApproval, getPendingApprovalsForSession, reconnectSessionWriter } from './claude-sdk.js';
 import { spawnCursor, abortCursorSession, isCursorSessionActive, getActiveCursorSessions } from './cursor-cli.js';
 import { queryCodex, abortCodexSession, isCodexSessionActive, getActiveCodexSessions } from './openai-codex.js';
@@ -81,6 +81,37 @@ import {
 import { getConnectableHost } from '../shared/networkHosts.js';
 
 const VALID_PROVIDERS = ['claude', 'codex', 'cursor', 'gemini'];
+
+// Filter projects by permissions and inject allowed projects that aren't yet discovered
+function filterAndInjectProjects(projects, source) {
+    let filtered = filterProjectsByPermissions(projects, source);
+    const allowedProjects = source?.allowedProjects;
+    const mode = source?.projectPermissionsMode;
+    if (mode === 'restricted' && Array.isArray(allowedProjects)) {
+        const existingPaths = new Set(filtered.map(p => path.resolve(p.path || p.fullPath || '')));
+        for (const allowedPath of allowedProjects) {
+            const resolved = path.resolve(allowedPath);
+            if (!existingPaths.has(resolved)) {
+                const dirName = path.basename(resolved);
+                const parentName = path.basename(path.dirname(resolved));
+                const encodedName = resolved.replace(/\//g, '-').replace(/^-/, '');
+                // Register in cache so extractProjectDirectory can resolve it correctly
+                setProjectDirectoryCache(encodedName, resolved);
+                filtered.push({
+                    name: encodedName,
+                    path: resolved,
+                    displayName: `${parentName}/${dirName}`,
+                    fullPath: resolved,
+                    isCustomName: false,
+                    sessions: [],
+                    geminiSessions: [],
+                    sessionMeta: { hasMore: false, total: 0 },
+                });
+            }
+        }
+    }
+    return filtered;
+}
 
 // File system watchers for provider project/session folders
 const PROVIDER_WATCH_PATHS = [
@@ -209,7 +240,7 @@ async function setupProjectsWatcher() {
                     if (client.readyState === WebSocket.OPEN) {
                         client.send(JSON.stringify({
                             type: 'projects_updated',
-                            projects: filterProjectsByPermissions(updatedProjects, client),
+                            projects: filterAndInjectProjects(updatedProjects, client),
                             timestamp: new Date().toISOString(),
                             changeType: eventType,
                             changedFile: path.relative(rootPath, filePath),
@@ -542,7 +573,7 @@ app.post('/api/system/update', authenticateToken, async (req, res) => {
 app.get('/api/projects', authenticateToken, async (req, res) => {
     try {
         const projects = await getProjects(broadcastProgress);
-        res.json(filterProjectsByPermissions(projects, req));
+        res.json(filterAndInjectProjects(projects, req));
     } catch (error) {
         res.status(500).json({ error: error.message });
     }

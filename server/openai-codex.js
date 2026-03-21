@@ -13,6 +13,8 @@
  * - getActiveCodexSessions() - List all active sessions
  */
 
+import fs from 'fs/promises';
+import path from 'path';
 import { Codex } from '@openai/codex-sdk';
 import { getCodexContextWindow } from '../shared/modelConstants.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
@@ -31,6 +33,79 @@ function normalizeCodexReasoningEffort(value) {
       return value;
     default:
       return DEFAULT_CODEX_REASONING_EFFORT;
+  }
+}
+
+/**
+ * Save uploaded images to temporary files and append paths to the prompt.
+ * Mirrors the Claude provider flow so Codex can inspect local files.
+ * @param {string} command
+ * @param {Array<{data?: string}>} images
+ * @param {string} cwd
+ * @returns {Promise<{modifiedCommand: string, tempImagePaths: string[], tempDir: string | null}>}
+ */
+async function handleImages(command, images, cwd) {
+  const tempImagePaths = [];
+  let tempDir = null;
+
+  if (!images || images.length === 0) {
+    return { modifiedCommand: command, tempImagePaths, tempDir };
+  }
+
+  try {
+    const workingDirectory = cwd || process.cwd();
+    tempDir = path.join(workingDirectory, '.tmp', 'images', Date.now().toString());
+    await fs.mkdir(tempDir, { recursive: true });
+
+    for (const [index, image] of images.entries()) {
+      const matches = image?.data?.match(/^data:([^;]+);base64,(.+)$/);
+      if (!matches) {
+        console.error('[Codex] Invalid image data format');
+        continue;
+      }
+
+      const [, mimeType, base64Data] = matches;
+      const extension = mimeType.split('/')[1] || 'png';
+      const filename = `image_${index}.${extension}`;
+      const filePath = path.join(tempDir, filename);
+
+      await fs.writeFile(filePath, Buffer.from(base64Data, 'base64'));
+      tempImagePaths.push(filePath);
+    }
+
+    let modifiedCommand = command;
+    if (tempImagePaths.length > 0) {
+      const imageNote = `\n\n[Images provided at the following paths:]\n${tempImagePaths.map((filePath, index) => `${index + 1}. ${filePath}`).join('\n')}`;
+      modifiedCommand = command ? `${command}${imageNote}` : imageNote.trim();
+    }
+
+    console.log(`[Codex] Processed ${tempImagePaths.length} images into ${tempDir}`);
+    return { modifiedCommand, tempImagePaths, tempDir };
+  } catch (error) {
+    console.error('[Codex] Error processing images:', error);
+    return { modifiedCommand: command, tempImagePaths, tempDir };
+  }
+}
+
+async function cleanupTempFiles(tempImagePaths, tempDir) {
+  if (!tempImagePaths || tempImagePaths.length === 0) {
+    return;
+  }
+
+  try {
+    for (const imagePath of tempImagePaths) {
+      await fs.unlink(imagePath).catch((error) => {
+        console.error(`[Codex] Failed to delete temp image ${imagePath}:`, error);
+      });
+    }
+
+    if (tempDir) {
+      await fs.rm(tempDir, { recursive: true, force: true }).catch((error) => {
+        console.error(`[Codex] Failed to delete temp directory ${tempDir}:`, error);
+      });
+    }
+  } catch (error) {
+    console.error('[Codex] Error cleaning temp files:', error);
   }
 }
 
@@ -210,6 +285,7 @@ export async function queryCodex(command, options = {}, ws) {
     sessionSummary,
     cwd,
     projectPath,
+    images,
     model,
     permissionMode = 'default',
     modelReasoningEffort = DEFAULT_CODEX_REASONING_EFFORT,
@@ -225,8 +301,15 @@ export async function queryCodex(command, options = {}, ws) {
   let currentSessionId = sessionId;
   let terminalFailure = null;
   const abortController = new AbortController();
+  let tempImagePaths = [];
+  let tempDir = null;
 
   try {
+    const imageResult = await handleImages(command, images, workingDirectory);
+    const finalCommand = imageResult.modifiedCommand;
+    tempImagePaths = imageResult.tempImagePaths;
+    tempDir = imageResult.tempDir;
+
     // Initialize Codex SDK
     codex = new Codex();
 
@@ -256,7 +339,9 @@ export async function queryCodex(command, options = {}, ws) {
       codex,
       status: 'running',
       abortController,
-      startedAt: new Date().toISOString()
+      startedAt: new Date().toISOString(),
+      tempImagePaths,
+      tempDir,
     });
 
     // Send session created event
@@ -267,7 +352,7 @@ export async function queryCodex(command, options = {}, ws) {
     });
 
     // Execute with streaming
-    const streamedTurn = await thread.runStreamed(command, {
+    const streamedTurn = await thread.runStreamed(finalCommand, {
       signal: abortController.signal
     });
 
@@ -366,6 +451,8 @@ export async function queryCodex(command, options = {}, ws) {
         session.status = session.status === 'aborted' ? 'aborted' : 'completed';
       }
     }
+
+    await cleanupTempFiles(tempImagePaths, tempDir);
   }
 }
 

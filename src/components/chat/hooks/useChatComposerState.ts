@@ -43,7 +43,7 @@ interface UseChatComposerStateArgs {
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
-  sendMessage: (message: unknown) => void;
+  sendMessage: (message: unknown) => boolean;
   sendByCtrlEnter?: boolean;
   onSessionActive?: (sessionId?: string | null) => void;
   onSessionProcessing?: (sessionId?: string | null) => void;
@@ -638,8 +638,9 @@ export function useChatComposerState({
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
 
+      let sent = false;
       if (provider === 'cursor') {
-        sendMessage({
+        sent = sendMessage({
           type: 'cursor-command',
           command: messageContent,
           sessionId: effectiveSessionId,
@@ -655,7 +656,7 @@ export function useChatComposerState({
           },
         });
       } else if (provider === 'codex') {
-        sendMessage({
+        sent = sendMessage({
           type: 'codex-command',
           command: messageContent,
           sessionId: effectiveSessionId,
@@ -668,10 +669,11 @@ export function useChatComposerState({
             sessionSummary,
             permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
             modelReasoningEffort: selectedThinkingMode.codexReasoningEffort,
+            images: uploadedImages,
           },
         });
       } else if (provider === 'gemini') {
-        sendMessage({
+        sent = sendMessage({
           type: 'gemini-command',
           command: messageContent,
           sessionId: effectiveSessionId,
@@ -687,7 +689,7 @@ export function useChatComposerState({
           },
         });
       } else {
-        sendMessage({
+        sent = sendMessage({
           type: 'claude-command',
           command: messageContent,
           options: {
@@ -702,6 +704,22 @@ export function useChatComposerState({
             images: uploadedImages,
           },
         });
+      }
+
+      // If WebSocket was disconnected, reset UI to avoid infinite "Reasoning..."
+      if (!sent) {
+        setIsLoading(false);
+        setCanAbortSession(false);
+        setClaudeStatus(null);
+        setChatMessages((previous) => [
+          ...previous,
+          {
+            type: 'system' as const,
+            content: '⚠️ 连接已断开，消息未发送。请刷新页面后重试。',
+            timestamp: new Date(),
+          },
+        ]);
+        return;
       }
 
       setInput('');

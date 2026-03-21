@@ -2,6 +2,7 @@ import { useTranslation } from 'react-i18next';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type { AppTab, Project, ProjectSession } from '../../../../types/app';
 import { usePlugins } from '../../../../contexts/PluginsContext';
+import { thinkingModes } from '../../../chat/constants/thinkingModes';
 
 type MainContentTitleProps = {
   activeTab: AppTab;
@@ -30,12 +31,27 @@ function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: st
   return 'Project';
 }
 
+const thinkingPrefixes = thinkingModes
+  .map((m) => m.prefix)
+  .filter(Boolean)
+  .sort((a, b) => b.length - a.length);
+
+function stripThinkingPrefix(name: string): string {
+  for (const prefix of thinkingPrefixes) {
+    if (name.toLowerCase().startsWith(`${prefix}: `)) {
+      return name.slice(prefix.length + 2);
+    }
+  }
+  return name;
+}
+
 function getSessionTitle(session: ProjectSession): string {
   if (session.__provider === 'cursor') {
     return (session.name as string) || 'Untitled Session';
   }
 
-  return (session.summary as string) || 'New Session';
+  const summary = (session.summary as string) || '';
+  return summary ? stripThinkingPrefix(summary) : 'New Session';
 }
 
 export default function MainContentTitle({

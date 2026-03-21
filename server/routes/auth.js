@@ -144,7 +144,7 @@ router.post('/ypbot-login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid or expired ypbot token' });
     }
 
-    const { username, allowed_projects, project_permissions_mode } = decoded;
+    const { username, github_username, allowed_projects, project_permissions_mode } = decoded;
     if (!username) {
       return res.status(400).json({ error: 'Token missing username' });
     }
@@ -156,6 +156,22 @@ router.post('/ypbot-login', async (req, res) => {
       const placeholderPassword = 'ypbot-managed-' + crypto.randomUUID();
       const passwordHash = await bcrypt.hash(placeholderPassword, saltRounds);
       user = userDb.createUser(username, passwordHash);
+    }
+
+    // Auto-populate git config on first login (use github_username if available, else ypbot username)
+    const existingGitConfig = userDb.getGitConfig(user.id);
+    if (!existingGitConfig || (!existingGitConfig.git_name && !existingGitConfig.git_email)) {
+      const gitName = github_username || username;
+      const gitEmail = github_username
+        ? `${github_username}@users.noreply.github.com`
+        : `${username}@ypbot.local`;
+      userDb.updateGitConfig(user.id, gitName, gitEmail);
+      console.log(`Auto-populated git config for user ${username}: ${gitName} <${gitEmail}>`);
+    }
+
+    // Platform-managed users skip onboarding entirely (git config auto-populated, agents managed by platform)
+    if (!userDb.hasCompletedOnboarding(user.id)) {
+      userDb.completeOnboarding(user.id);
     }
 
     // Update last login

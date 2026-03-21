@@ -205,6 +205,11 @@ function clearProjectDirectoryCache() {
   projectDirectoryCache.clear();
 }
 
+// Register a project name → directory mapping in cache (for injected/platform projects)
+function setProjectDirectoryCache(projectName, directory) {
+  projectDirectoryCache.set(projectName, directory);
+}
+
 // Load project configuration file
 async function loadProjectConfig() {
   const configPath = path.join(os.homedir(), '.claude', 'project-config.json');
@@ -2580,6 +2585,7 @@ export {
   saveProjectConfig,
   extractProjectDirectory,
   clearProjectDirectoryCache,
+  setProjectDirectoryCache,
   getCodexSessions,
   getCodexSessionProjectPath,
   getCodexSessionMessages,

@@ -4,6 +4,7 @@ import { decodeHtmlEntities, formatUsageLimitText } from '../utils/chatFormattin
 import { safeLocalStorage } from '../utils/chatStorage';
 import type { ChatMessage, PendingPermissionRequest } from '../types/types';
 import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import { useWebSocket } from '../../../contexts/WebSocketContext';
 
 type PendingViewSession = {
   sessionId: string | null;
@@ -156,21 +157,21 @@ export function useChatRealtimeHandlers({
   onNavigateToSession,
   onWebSocketReconnect,
 }: UseChatRealtimeHandlersArgs) {
-  const lastProcessedMessageRef = useRef<LatestChatMessage | null>(null);
+  const { messageQueueRef } = useWebSocket();
   // Track whether we've been streaming content via stream_event deltas,
   // so we can skip the duplicate final assistant message from the SDK.
   const streamedViaEventsRef = useRef(false);
 
   useEffect(() => {
-    if (!latestMessage) {
+    // Drain ALL queued messages to prevent React 18 state batching from
+    // silently dropping intermediate messages during rapid streaming.
+    const messages = messageQueueRef.current.splice(0);
+    if (messages.length === 0) {
       return;
     }
 
-    // Guard against duplicate processing when dependency updates occur without a new message object.
-    if (lastProcessedMessageRef.current === latestMessage) {
-      return;
-    }
-    lastProcessedMessageRef.current = latestMessage;
+    for (const latestMessage of messages) {
+    try {
 
     const messageData = latestMessage.data?.message || latestMessage.data;
     const structuredMessageData =
@@ -1300,6 +1301,10 @@ export function useChatRealtimeHandlers({
       default:
         break;
     }
+    } catch (err) {
+      console.error('Error processing WebSocket message:', err, latestMessage);
+    }
+    } // end for (const latestMessage of messages)
   }, [
     latestMessage,
     provider,
