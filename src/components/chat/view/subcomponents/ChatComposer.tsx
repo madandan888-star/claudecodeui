@@ -316,7 +316,7 @@ export default function ChatComposer({
             </div>
 
             <button
-              type="submit"
+              type="button"
               disabled={!input.trim() || isLoading}
               onMouseDown={(event) => {
                 event.preventDefault();

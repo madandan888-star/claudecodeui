@@ -84,11 +84,19 @@ const authenticateToken = async (req, res, next) => {
     }
 
     // Auto-refresh: if token is past halfway through its lifetime, issue a new one
+    // Preserve allowedProjects and projectPermissionsMode from the original token
     if (decoded.exp && decoded.iat) {
       const now = Math.floor(Date.now() / 1000);
       const halfLife = (decoded.exp - decoded.iat) / 2;
       if (now > decoded.iat + halfLife) {
-        const newToken = generateToken(user);
+        const extraClaims = {};
+        if (Array.isArray(decoded.allowedProjects)) {
+          extraClaims.allowedProjects = decoded.allowedProjects;
+        }
+        if (decoded.projectPermissionsMode) {
+          extraClaims.projectPermissionsMode = decoded.projectPermissionsMode;
+        }
+        const newToken = generateToken(user, extraClaims);
         res.setHeader('X-Refreshed-Token', newToken);
       }
     }

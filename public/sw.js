@@ -1,5 +1,5 @@
 // Service Worker for Claude Code UI PWA
-const CACHE_NAME = 'claude-ui-v1';
+const CACHE_NAME = 'claude-ui-v3';
 const urlsToCache = [
   '/',
   '/index.html',

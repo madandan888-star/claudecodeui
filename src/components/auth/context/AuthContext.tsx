@@ -12,6 +12,7 @@ import type {
   OnboardingStatusPayload,
 } from '../types';
 import { parseJsonSafely, resolveApiErrorMessage } from '../utils';
+import { setToken as setInMemoryToken, clearToken as clearInMemoryToken } from '../../../utils/tokenStore';
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 const ALLOWED_PROJECTS_STORAGE_KEY = 'allowed-projects';
@@ -19,6 +20,7 @@ const ALLOWED_PROJECTS_STORAGE_KEY = 'allowed-projects';
 const readStoredToken = (): string | null => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
 
 const persistToken = (token: string) => {
+  setInMemoryToken(token);
   localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
 };
 
@@ -31,6 +33,7 @@ const persistAllowedProjects = (allowedProjects: unknown) => {
 };
 
 const clearStoredToken = () => {
+  clearInMemoryToken();
   localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
   localStorage.removeItem(ALLOWED_PROJECTS_STORAGE_KEY);
 };
@@ -174,6 +177,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
           setIsLoading(false);
           return;
         }
+        // ypbot token was present but login failed (expired/invalid).
+        // Clear any stale stored session to prevent falling through to
+        // checkAuthStatus with an old unrestricted token.
+        clearSession();
       }
 
       if (IS_PLATFORM) {

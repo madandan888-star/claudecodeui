@@ -1,8 +1,9 @@
 import { IS_PLATFORM } from "../constants/config";
+import { getToken as getInMemoryToken, setToken as setInMemoryToken } from "./tokenStore";
 
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
-  const token = localStorage.getItem('auth-token');
+  const token = getInMemoryToken() || localStorage.getItem('auth-token');
 
   const defaultHeaders = {};
 
@@ -24,7 +25,23 @@ export const authenticatedFetch = (url, options = {}) => {
   }).then((response) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
     if (refreshedToken) {
-      localStorage.setItem('auth-token', refreshedToken);
+      // Only accept the refreshed token if it belongs to the same user
+      // as the current in-memory token. This prevents stale admin requests
+      // (from providers that mount before ypbot-login completes) from
+      // overwriting a freshly exchanged wzh token.
+      const currentToken = getInMemoryToken();
+      let shouldAccept = !currentToken; // accept if no in-memory token yet
+      if (currentToken && refreshedToken) {
+        try {
+          const cur = JSON.parse(atob(currentToken.split('.')[1]));
+          const ref = JSON.parse(atob(refreshedToken.split('.')[1]));
+          shouldAccept = cur.userId === ref.userId;
+        } catch { shouldAccept = false; }
+      }
+      if (shouldAccept) {
+        setInMemoryToken(refreshedToken);
+        localStorage.setItem('auth-token', refreshedToken);
+      }
     }
     return response;
   });
@@ -101,7 +118,7 @@ export const api = {
       method: 'DELETE',
     }),
   searchConversationsUrl: (query, limit = 50) => {
-    const token = localStorage.getItem('auth-token');
+    const token = getInMemoryToken() || localStorage.getItem('auth-token');
     const params = new URLSearchParams({ q: query, limit: String(limit) });
     if (token) params.set('token', token);
     return `/api/search/conversations?${params.toString()}`;

@@ -164,6 +164,7 @@ export function useChatComposerState({
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
+  const submittingRef = useRef(false);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -507,9 +508,11 @@ export function useChatComposerState({
     ) => {
       event.preventDefault();
       const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || isLoading || !selectedProject) {
+      if (!currentInput.trim() || isLoading || !selectedProject || submittingRef.current) {
         return;
       }
+      submittingRef.current = true;
+      try {
 
       // Intercept slash commands: if input starts with /commandName, execute as command with args
       const trimmedInput = currentInput.trim();
@@ -736,6 +739,10 @@ export function useChatComposerState({
       }
 
       safeLocalStorage.removeItem(`draft_input_${selectedProject.name}`);
+
+      } finally {
+        submittingRef.current = false;
+      }
     },
     [
       selectedSession,
