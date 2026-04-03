@@ -65,6 +65,8 @@ import userRoutes from './routes/user.js';
 import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
+import messagesRoutes from './routes/messages.js';
+import { createNormalizedMessage } from './providers/types.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
@@ -477,6 +479,9 @@ app.use('/api/gemini', authenticateToken, geminiRoutes);
 // Plugins API Routes (protected)
 app.use('/api/plugins', authenticateToken, pluginsRoutes);
 
+// Unified session messages route (protected)
+app.use('/api/sessions', authenticateToken, messagesRoutes);
+
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
 
@@ -633,6 +638,7 @@ app.get('/api/projects/:projectName/sessions/:sessionId/messages', authenticateT
         res.status(500).json({ error: error.message });
     }
 });
+
 
 // Rename project endpoint
 app.put('/api/projects/:projectName/rename', authenticateToken, async (req, res) => {
@@ -1692,6 +1698,10 @@ wss.on('connection', (ws, request) => {
 
 /**
  * WebSocket Writer - Wrapper for WebSocket to match SSEStreamWriter interface
+ *
+ * Provider files use `createNormalizedMessage()` from `providers/types.js` and
+ * adapter `normalizeMessage()` to produce unified NormalizedMessage events.
+ * The writer simply serialises and sends.
  */
 class WebSocketWriter {
     constructor(ws, userId = null) {
@@ -1703,7 +1713,6 @@ class WebSocketWriter {
 
     send(data) {
         if (this.ws.readyState === 1) { // WebSocket.OPEN
-            // Providers send raw objects, we stringify for WebSocket
             this.ws.send(JSON.stringify(data));
         }
     }
@@ -1836,12 +1845,7 @@ function handleChatConnection(ws, request) {
                     success = await abortClaudeSDKSession(data.sessionId);
                 }
 
-                writer.send({
-                    type: 'session-aborted',
-                    sessionId: data.sessionId,
-                    provider,
-                    success
-                });
+                writer.send(createNormalizedMessage({ kind: 'complete', exitCode: success ? 0 : 1, aborted: true, success, sessionId: data.sessionId, provider }));
             } else if (data.type === 'claude-permission-response') {
                 // Relay UI approval decisions back into the SDK control flow.
                 // This does not persist permissions; it only resolves the in-flight request,
@@ -1857,12 +1861,7 @@ function handleChatConnection(ws, request) {
             } else if (data.type === 'cursor-abort') {
                 console.log('[DEBUG] Abort Cursor session:', data.sessionId);
                 const success = abortCursorSession(data.sessionId);
-                writer.send({
-                    type: 'session-aborted',
-                    sessionId: data.sessionId,
-                    provider: 'cursor',
-                    success
-                });
+                writer.send(createNormalizedMessage({ kind: 'complete', exitCode: success ? 0 : 1, aborted: true, success, sessionId: data.sessionId, provider: 'cursor' }));
             } else if (data.type === 'check-session-status') {
                 // Check if a specific session is currently processing
                 const provider = data.provider || 'claude';

@@ -114,24 +114,6 @@ router.get('/sessions', async (req, res) => {
   }
 });
 
-router.get('/sessions/:sessionId/messages', async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const { limit, offset } = req.query;
-
-    const result = await getCodexSessionMessages(
-      sessionId,
-      limit ? parseInt(limit, 10) : null,
-      offset ? parseInt(offset, 10) : 0
-    );
-
-    res.json({ success: true, ...result });
-  } catch (error) {
-    console.error('Error fetching Codex session messages:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
 router.delete('/sessions/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;

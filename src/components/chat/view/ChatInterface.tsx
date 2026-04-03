@@ -3,10 +3,12 @@ import { useTranslation } from 'react-i18next';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
 import type { ChatInterfaceProps, Provider  } from '../types/types';
+import type { SessionProvider } from '../../../types/app';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
+import { useSessionStore } from '../../../stores/useSessionStore';
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 
@@ -45,10 +47,10 @@ function ChatInterface({
   const { t } = useTranslation('chat');
   const [isQuickSettingsOpen, setIsQuickSettingsOpen] = useState(false);
 
+  const sessionStore = useSessionStore();
   const streamBufferRef = useRef('');
   const streamTimerRef = useRef<number | null>(null);
-  const thinkingBufferRef = useRef('');
-  const thinkingTimerRef = useRef<number | null>(null);
+  const accumulatedStreamRef = useRef('');
   const pendingViewSessionRef = useRef<PendingViewSession | null>(null);
 
   const resetStreamingState = useCallback(() => {
@@ -57,11 +59,7 @@ function ChatInterface({
       streamTimerRef.current = null;
     }
     streamBufferRef.current = '';
-    if (thinkingTimerRef.current) {
-      clearTimeout(thinkingTimerRef.current);
-      thinkingTimerRef.current = null;
-    }
-    thinkingBufferRef.current = '';
+    accumulatedStreamRef.current = '';
   }, []);
 
   const {
@@ -85,18 +83,17 @@ function ChatInterface({
 
   const {
     chatMessages,
-    setChatMessages,
+    addMessage,
+    clearMessages,
+    rewindMessages,
     isLoading,
     setIsLoading,
     currentSessionId,
     setCurrentSessionId,
-    sessionMessages,
-    setSessionMessages,
     isLoadingSessionMessages,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,
-    setIsSystemSessionChange,
     canAbortSession,
     setCanAbortSession,
     isUserScrolledUp,
@@ -118,7 +115,6 @@ function ChatInterface({
     scrollToBottom,
     scrollToBottomAndReset,
     handleScroll,
-    loadSessionMessages,
   } = useChatSessionState({
     selectedProject,
     selectedSession,
@@ -130,6 +126,7 @@ function ChatInterface({
     resetStreamingState,
     pendingViewSessionRef,
     isConnected,
+    sessionStore,
   });
 
   const {
@@ -199,8 +196,9 @@ function ChatInterface({
     onShowSettings,
     pendingViewSessionRef,
     scrollToBottom,
-    setChatMessages,
-    setSessionMessages,
+    addMessage,
+    clearMessages,
+    rewindMessages,
     setIsLoading,
     setCanAbortSession,
     setClaudeStatus,
@@ -208,22 +206,19 @@ function ChatInterface({
     setPendingPermissionRequests,
   });
 
-  // On WebSocket reconnect, re-fetch the current session's messages from JSONL so missed
-  // streaming events (e.g. from long tool calls while iOS had the tab backgrounded) are shown.
-  // Also reset isLoading — if the server restarted or the session died mid-stream, the client
-  // would be stuck in "Processing..." forever without this reset.
+  // On WebSocket reconnect, re-fetch the current session's messages from the server
+  // so missed streaming events are shown. Also reset isLoading.
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
-    const provider = (localStorage.getItem('selected-provider') as any) || 'claude';
-    const messages = await loadSessionMessages(selectedProject.name, selectedSession.id, false, provider);
-    if (messages && messages.length > 0) {
-      setChatMessages(messages);
-    }
-    // Reset loading state — if the session is still active, new WebSocket messages will
-    // set it back to true. If it died, this clears the permanent frozen state.
+    const providerVal = (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
+    await sessionStore.refreshFromServer(selectedSession.id, {
+      provider: (selectedSession.__provider || providerVal) as SessionProvider,
+      projectName: selectedProject.name,
+      projectPath: selectedProject.fullPath || selectedProject.path || '',
+    });
     setIsLoading(false);
     setCanAbortSession(false);
-  }, [selectedProject, selectedSession, loadSessionMessages, setChatMessages, setIsLoading, setCanAbortSession]);
+  }, [selectedProject, selectedSession, sessionStore, setIsLoading, setCanAbortSession]);
 
   useChatRealtimeHandlers({
     latestMessage,
@@ -232,24 +227,22 @@ function ChatInterface({
     selectedSession,
     currentSessionId,
     setCurrentSessionId,
-    setChatMessages,
     setIsLoading,
     setCanAbortSession,
     setClaudeStatus,
     setTokenBudget,
-    setIsSystemSessionChange,
     setPendingPermissionRequests,
     pendingViewSessionRef,
     streamBufferRef,
     streamTimerRef,
-    thinkingBufferRef,
-    thinkingTimerRef,
+    accumulatedStreamRef,
     onSessionInactive,
     onSessionProcessing,
     onSessionNotProcessing,
     onReplaceTemporarySession,
     onNavigateToSession,
     onWebSocketReconnect: handleWebSocketReconnect,
+    sessionStore,
   });
 
   useEffect(() => {
@@ -337,7 +330,7 @@ function ChatInterface({
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
-          sessionMessagesCount={sessionMessages.length}
+          sessionMessagesCount={chatMessages.length}
           visibleMessageCount={visibleMessageCount}
           visibleMessages={visibleMessages}
           loadEarlierMessages={loadEarlierMessages}
