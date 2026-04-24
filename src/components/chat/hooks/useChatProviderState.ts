@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
 import { CLAUDE_MODELS, CODEX_MODELS, CURSOR_MODELS, GEMINI_MODELS } from '../../../../shared/modelConstants';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
-import type { ProjectSession, SessionProvider } from '../../../types/app';
+import type { ProjectSession, LLMProvider } from '../../../types/app';
 
 const DEFAULT_PERMISSION_MODE: PermissionMode = 'bypassPermissions';
 
@@ -18,7 +18,7 @@ const normalizePermissionMode = (value: string | null | undefined): PermissionMo
   }
 };
 
-const readGlobalPermissionMode = (provider: SessionProvider): PermissionMode => {
+const readGlobalPermissionMode = (provider: LLMProvider): PermissionMode => {
   if (typeof window === 'undefined') {
     return DEFAULT_PERMISSION_MODE;
   }
@@ -57,7 +57,7 @@ const readGlobalPermissionMode = (provider: SessionProvider): PermissionMode => 
 
 const resolvePermissionMode = (
   sessionId: string | null | undefined,
-  provider: SessionProvider,
+  provider: LLMProvider,
 ): PermissionMode => {
   if (typeof window === 'undefined') {
     return DEFAULT_PERMISSION_MODE;
@@ -78,8 +78,8 @@ interface UseChatProviderStateArgs {
 }
 
 export function useChatProviderState({ selectedSession }: UseChatProviderStateArgs) {
-  const [provider, setProvider] = useState<SessionProvider>(() => {
-    return (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
+  const [provider, setProvider] = useState<LLMProvider>(() => {
+    return (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
   });
   const [permissionMode, setPermissionMode] = useState<PermissionMode>(() => readGlobalPermissionMode(provider));
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);

@@ -106,21 +106,21 @@ export const api = {
     authenticatedFetch(`/api/gemini/sessions/${sessionId}`, {
       method: 'DELETE',
     }),
-  deleteProject: (projectName, force = false) =>
-    authenticatedFetch(`/api/projects/${projectName}${force ? '?force=true' : ''}`, {
+  deleteProject: (projectName, force = false, deleteData = false) => {
+    const params = new URLSearchParams();
+    if (force) params.set('force', 'true');
+    if (deleteData) params.set('deleteData', 'true');
+    const qs = params.toString();
+    return authenticatedFetch(`/api/projects/${projectName}${qs ? `?${qs}` : ''}`, {
       method: 'DELETE',
-    }),
+    });
+  },
   searchConversationsUrl: (query, limit = 50) => {
     const token = getInMemoryToken() || localStorage.getItem('auth-token');
     const params = new URLSearchParams({ q: query, limit: String(limit) });
     if (token) params.set('token', token);
     return `/api/search/conversations?${params.toString()}`;
   },
-  createProject: (path) =>
-    authenticatedFetch('/api/projects/create', {
-      method: 'POST',
-      body: JSON.stringify({ path }),
-    }),
   createWorkspace: (workspaceData) =>
     authenticatedFetch('/api/projects/create-workspace', {
       method: 'POST',
@@ -128,6 +128,8 @@ export const api = {
     }),
   readFile: (projectName, filePath) =>
     authenticatedFetch(`/api/projects/${projectName}/file?filePath=${encodeURIComponent(filePath)}`),
+  readFileBlob: (projectName, filePath) =>
+    authenticatedFetch(`/api/projects/${projectName}/files/content?path=${encodeURIComponent(filePath)}`),
   saveFile: (projectName, filePath, content) =>
     authenticatedFetch(`/api/projects/${projectName}/file`, {
       method: 'PUT',
@@ -157,13 +159,6 @@ export const api = {
 
   uploadFiles: (projectName, formData) =>
     authenticatedFetch(`/api/projects/${projectName}/files/upload`, {
-      method: 'POST',
-      body: formData,
-      headers: {}, // Let browser set Content-Type for FormData
-    }),
-
-  transcribe: (formData) =>
-    authenticatedFetch('/api/transcribe', {
       method: 'POST',
       body: formData,
       headers: {}, // Let browser set Content-Type for FormData

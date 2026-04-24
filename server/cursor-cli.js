@@ -1,8 +1,9 @@
 import { spawn } from 'child_process';
 import crossSpawn from 'cross-spawn';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
-import { cursorAdapter } from './providers/cursor/adapter.js';
-import { createNormalizedMessage } from './providers/types.js';
+import { sessionsService } from './modules/providers/services/sessions.service.js';
+import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
+import { createNormalizedMessage } from './shared/utils.js';
 
 // Use cross-spawn on Windows for better command execution
 const spawnFunction = process.platform === 'win32' ? crossSpawn : spawn;
@@ -189,7 +190,7 @@ async function spawnCursor(command, options = {}, ws) {
             case 'assistant':
               // Accumulate assistant message chunks
               if (response.message && response.message.content && response.message.content.length > 0) {
-                const normalized = cursorAdapter.normalizeMessage(response, capturedSessionId || sessionId || null);
+                const normalized = sessionsService.normalizeMessage('cursor', response, capturedSessionId || sessionId || null);
                 for (const msg of normalized) ws.send(msg);
               }
               break;
@@ -219,7 +220,7 @@ async function spawnCursor(command, options = {}, ws) {
           }
 
           // If not JSON, send as stream delta via adapter
-          const normalized = cursorAdapter.normalizeMessage(line, capturedSessionId || sessionId || null);
+          const normalized = sessionsService.normalizeMessage('cursor', line, capturedSessionId || sessionId || null);
           for (const msg of normalized) ws.send(msg);
         }
       };
@@ -287,14 +288,20 @@ async function spawnCursor(command, options = {}, ws) {
       });
 
       // Handle process errors
-      cursorProcess.on('error', (error) => {
+      cursorProcess.on('error', async (error) => {
         console.error('Cursor CLI process error:', error);
 
         // Clean up process reference on error
         const finalSessionId = capturedSessionId || sessionId || processKey;
         activeCursorProcesses.delete(finalSessionId);
 
-        ws.send(createNormalizedMessage({ kind: 'error', content: error.message, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
+        // Check if Cursor CLI is installed for a clearer error message
+        const installed = await providerAuthService.isProviderInstalled('cursor');
+        const errorContent = !installed
+          ? 'Cursor CLI is not installed. Please install it from https://cursor.com'
+          : error.message;
+
+        ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
         notifyTerminalState({ error });
 
         settleOnce(() => reject(error));

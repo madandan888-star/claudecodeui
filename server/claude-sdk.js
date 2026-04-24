@@ -24,8 +24,9 @@ import {
   notifyRunStopped,
   notifyUserIfEnabled
 } from './services/notification-orchestrator.js';
-import { claudeAdapter } from './providers/claude/adapter.js';
-import { createNormalizedMessage } from './providers/types.js';
+import { sessionsService } from './modules/providers/services/sessions.service.js';
+import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
+import { createNormalizedMessage } from './shared/utils.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -34,7 +35,7 @@ const pendingPermissionMeta = new Map();
 
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
-const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion']);
+const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
 function createRequestId() {
   if (typeof crypto.randomUUID === 'function') {
@@ -150,6 +151,16 @@ function mapCliOptionsToSDK(options = {}) {
   const { sessionId, cwd, toolsSettings, permissionMode } = options;
 
   const sdkOptions = {};
+
+  // Forward all host env vars (e.g. ANTHROPIC_BASE_URL) to the subprocess.
+  // Since SDK 0.2.113, options.env replaces process.env instead of overlaying it.
+  sdkOptions.env = { ...process.env };
+
+  // Use CLAUDE_CLI_PATH if explicitly set, otherwise fall back to 'claude' on PATH.
+  // The SDK 0.2.113+ looks for a bundled native binary optional dep by default;
+  // this fallback ensures users who installed via the official installer still work
+  // even when npm prune --production has removed those optional deps.
+  sdkOptions.pathToClaudeCodeExecutable = process.env.CLAUDE_CLI_PATH || 'claude';
 
   // Map working directory
   if (cwd) {
@@ -709,7 +720,7 @@ async function queryClaudeSDK(command, options = {}, ws) {
       const sid = capturedSessionId || sessionId || null;
 
       // Use adapter to normalize SDK events into NormalizedMessage[]
-      const normalized = claudeAdapter.normalizeMessage(transformedMessage, sid);
+      const normalized = sessionsService.normalizeMessage('claude', transformedMessage, sid);
       for (const msg of normalized) {
         // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
@@ -768,9 +779,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
     // Clean up temporary image files on error
     await cleanupTempFiles(tempImagePaths, tempDir);
 
+    // Check if Claude CLI is installed for a clearer error message
+    const installed = await providerAuthService.isProviderInstalled('claude');
+    const errorContent = !installed
+      ? 'Claude Code is not installed. Please install it first: https://docs.anthropic.com/en/docs/claude-code'
+      : error.message;
+
     // Send error to WebSocket (use current writer for reconnect support)
     const errorWriter = getErrorWriter();
-    errorWriter.send(createNormalizedMessage({ kind: 'error', content: error.message, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+    errorWriter.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
     notifyRunFailed({
       userId: ws?.userId || null,
       provider: 'claude',
@@ -778,8 +795,6 @@ async function queryClaudeSDK(command, options = {}, ws) {
       sessionName: sessionSummary,
       error
     });
-
-    throw error;
   }
 }
 

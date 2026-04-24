@@ -1,14 +1,17 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
+import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
 import type { ChatInterfaceProps, Provider  } from '../types/types';
-import type { SessionProvider } from '../../../types/app';
+import type { LLMProvider } from '../../../types/app';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useSessionStore } from '../../../stores/useSessionStore';
+
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 
@@ -24,7 +27,6 @@ function ChatInterface({
   ws,
   sendMessage,
   latestMessage,
-  isConnected,
   onFileOpen,
   onInputFocusChange,
   onSessionActive,
@@ -45,7 +47,6 @@ function ChatInterface({
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
   const { t } = useTranslation('chat');
-  const [isQuickSettingsOpen, setIsQuickSettingsOpen] = useState(false);
 
   const sessionStore = useSessionStore();
   const streamBufferRef = useRef('');
@@ -125,7 +126,6 @@ function ChatInterface({
     processingSessions,
     resetStreamingState,
     pendingViewSessionRef,
-    isConnected,
     sessionStore,
   });
 
@@ -168,7 +168,6 @@ function ChatInterface({
     syncInputOverlayScroll,
     handleClearInput,
     handleAbortSession,
-    handleTranscript,
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,
@@ -210,9 +209,9 @@ function ChatInterface({
   // so missed streaming events are shown. Also reset isLoading.
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
-    const providerVal = (localStorage.getItem('selected-provider') as SessionProvider) || 'claude';
+    const providerVal = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
     await sessionStore.refreshFromServer(selectedSession.id, {
-      provider: (selectedSession.__provider || providerVal) as SessionProvider,
+      provider: (selectedSession.__provider || providerVal) as LLMProvider,
       projectName: selectedProject.name,
       projectPath: selectedProject.fullPath || selectedProject.path || '',
     });
@@ -255,12 +254,6 @@ function ChatInterface({
         return;
       }
 
-      // Don't abort session when permission panels (e.g. AskUserQuestion) are active;
-      // let the panel handle Escape (skip) instead of aborting the entire session.
-      if (pendingPermissionRequests.length > 0) {
-        return;
-      }
-
       event.preventDefault();
       handleAbortSession();
     };
@@ -269,13 +262,18 @@ function ChatInterface({
     return () => {
       document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
     };
-  }, [canAbortSession, handleAbortSession, isLoading, pendingPermissionRequests]);
+  }, [canAbortSession, handleAbortSession, isLoading]);
 
   useEffect(() => {
     return () => {
       resetStreamingState();
     };
   }, [resetStreamingState]);
+
+  const permissionContextValue = useMemo(() => ({
+    pendingPermissionRequests,
+    handlePermissionDecision,
+  }), [pendingPermissionRequests, handlePermissionDecision]);
 
   if (!selectedProject) {
     const selectedProviderLabel =
@@ -302,7 +300,7 @@ function ChatInterface({
   }
 
   return (
-    <>
+    <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full flex-col">
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
@@ -347,17 +345,15 @@ function ChatInterface({
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
-          isLoading={isLoading}
-          isInputFocused={isInputFocused}
-          claudeStatus={claudeStatus}
-          onAbortSession={handleAbortSession}
         />
 
         <ChatComposer
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
+          claudeStatus={claudeStatus}
           isLoading={isLoading}
+          onAbortSession={handleAbortSession}
           provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
@@ -371,8 +367,6 @@ function ChatInterface({
           isUserScrolledUp={isUserScrolledUp}
           hasMessages={chatMessages.length > 0}
           onScrollToBottom={scrollToBottomAndReset}
-          isQuickSettingsOpen={isQuickSettingsOpen}
-          onToggleQuickSettings={() => setIsQuickSettingsOpen((previous) => !previous)}
           onSubmit={handleSubmit}
           isDragActive={isDragActive}
           attachedImages={attachedImages}
@@ -407,7 +401,6 @@ function ChatInterface({
           onTextareaScrollSync={syncInputOverlayScroll}
           onTextareaInput={handleTextareaInput}
           onInputFocusChange={handleInputFocusChange}
-          isInputFocused={isInputFocused}
           placeholder={t('input.placeholder', {
             provider:
               provider === 'cursor'
@@ -420,15 +413,11 @@ function ChatInterface({
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
-          onTranscript={handleTranscript}
         />
       </div>
 
-      <QuickSettingsPanel
-        isOpen={isQuickSettingsOpen}
-        onOpenChange={setIsQuickSettingsOpen}
-      />
-    </>
+      <QuickSettingsPanel />
+    </PermissionContext.Provider>
   );
 }
 

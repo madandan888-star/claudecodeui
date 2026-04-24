@@ -18,8 +18,9 @@ import path from 'path';
 import { Codex } from '@openai/codex-sdk';
 import { getCodexContextWindow } from '../shared/modelConstants.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
-import { codexAdapter } from './providers/codex/adapter.js';
-import { createNormalizedMessage } from './providers/types.js';
+import { sessionsService } from './modules/providers/services/sessions.service.js';
+import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
+import { createNormalizedMessage } from './shared/utils.js';
 
 // Track active sessions
 const activeCodexSessions = new Map();
@@ -368,7 +369,7 @@ export async function queryCodex(command, options = {}, ws) {
       const transformed = transformCodexEvent(event);
 
       // Normalize the transformed event into NormalizedMessage(s) via adapter
-      const normalizedMsgs = codexAdapter.normalizeMessage(transformed, currentSessionId);
+      const normalizedMsgs = sessionsService.normalizeMessage('codex', transformed, currentSessionId);
       for (const msg of normalizedMsgs) {
         sendMessage(ws, msg);
       }
@@ -412,7 +413,14 @@ export async function queryCodex(command, options = {}, ws) {
 
     if (!wasAborted) {
       console.error('[Codex] Error:', error);
-      sendMessage(ws, createNormalizedMessage({ kind: 'error', content: error.message, sessionId: currentSessionId, provider: 'codex' }));
+
+      // Check if Codex SDK is available for a clearer error message
+      const installed = await providerAuthService.isProviderInstalled('codex');
+      const errorContent = !installed
+        ? 'Codex CLI is not configured. Please set up authentication first.'
+        : error.message;
+
+      sendMessage(ws, createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: currentSessionId, provider: 'codex' }));
       if (!terminalFailure) {
         notifyRunFailed({
           userId: ws?.userId || null,

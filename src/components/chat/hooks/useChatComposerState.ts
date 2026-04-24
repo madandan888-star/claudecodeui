@@ -19,7 +19,7 @@ import type {
   PendingPermissionRequest,
   PermissionMode,
 } from '../types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../../types/app';
+import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import { escapeRegExp } from '../utils/chatFormatting';
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
@@ -33,7 +33,7 @@ interface UseChatComposerStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
-  provider: SessionProvider;
+  provider: LLMProvider;
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
   cursorModel: string;
@@ -682,14 +682,11 @@ export function useChatComposerState({
         setIsLoading(false);
         setCanAbortSession(false);
         setClaudeStatus(null);
-        setChatMessages((previous) => [
-          ...previous,
-          {
-            type: 'system' as const,
-            content: '⚠️ 连接已断开，消息未发送。请刷新页面后重试。',
-            timestamp: new Date(),
-          },
-        ]);
+        addMessage({
+          type: 'system',
+          content: '⚠️ 连接已断开，消息未发送。请刷新页面后重试。',
+          timestamp: new Date(),
+        });
         return;
       }
 
@@ -778,7 +775,7 @@ export function useChatComposerState({
     }
     // Re-run when input changes so restored drafts get the same autosize behavior as typed text.
     textareaRef.current.style.height = 'auto';
-    textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+    textareaRef.current.style.height = `${Math.max(22, textareaRef.current.scrollHeight)}px`;
     const lineHeight = parseInt(window.getComputedStyle(textareaRef.current).lineHeight);
     const expanded = textareaRef.current.scrollHeight > lineHeight * 2;
     setIsTextareaExpanded(expanded);
@@ -865,7 +862,7 @@ export function useChatComposerState({
     (event: FormEvent<HTMLTextAreaElement>) => {
       const target = event.currentTarget;
       target.style.height = 'auto';
-      target.style.height = `${target.scrollHeight}px`;
+      target.style.height = `${Math.max(22, target.scrollHeight)}px`;
       setCursorPosition(target.selectionStart);
       syncInputOverlayScroll(target);
 
@@ -918,30 +915,6 @@ export function useChatComposerState({
       provider,
     });
   }, [canAbortSession, currentSessionId, pendingViewSessionRef, provider, selectedSession?.id, sendMessage]);
-
-  const handleTranscript = useCallback((text: string) => {
-    if (!text.trim()) {
-      return;
-    }
-
-    setInput((previousInput) => {
-      const newInput = previousInput.trim() ? `${previousInput} ${text}` : text;
-      inputValueRef.current = newInput;
-
-      setTimeout(() => {
-        if (!textareaRef.current) {
-          return;
-        }
-
-        textareaRef.current.style.height = 'auto';
-        textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
-        const lineHeight = parseInt(window.getComputedStyle(textareaRef.current).lineHeight);
-        setIsTextareaExpanded(textareaRef.current.scrollHeight > lineHeight * 2);
-      }, 0);
-
-      return newInput;
-    });
-  }, []);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {
@@ -1035,7 +1008,6 @@ export function useChatComposerState({
     syncInputOverlayScroll,
     handleClearInput,
     handleAbortSession,
-    handleTranscript,
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,

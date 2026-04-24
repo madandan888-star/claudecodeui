@@ -3,12 +3,10 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import Sidebar from '../sidebar/view/Sidebar';
 import MainContent from '../main-content/view/MainContent';
-import MobileMenuButton from '../main-content/view/subcomponents/MobileMenuButton';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
-import MobileNav from './MobileNav';
 
 export default function AppContent() {
   const navigate = useNavigate();
@@ -34,7 +32,6 @@ export default function AppContent() {
     activeTab,
     sidebarOpen,
     isLoadingProjects,
-    isInputFocused,
     externalMessageUpdate,
     setActiveTab,
     setSidebarOpen,
@@ -125,8 +122,28 @@ export default function AppContent() {
     }
   }, [isConnected, selectedSession?.id, sendMessage]);
 
+  // Adjust the app container to stay above the virtual keyboard on iOS Safari.
+  // On Chrome for Android the layout viewport already shrinks when the keyboard opens,
+  // so inset-0 adjusts automatically. On iOS the layout viewport stays full-height and
+  // the keyboard overlays it — we use the Visual Viewport API to track keyboard height
+  // and apply it as a CSS variable that shifts the container's bottom edge up.
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      // Only resize matters — keyboard open/close changes vv.height.
+      // Do NOT listen to scroll: on iOS Safari, scrolling content changes
+      // vv.offsetTop which would make --keyboard-height fluctuate during
+      // normal scrolling, causing the container to bounce up and down.
+      const kb = Math.max(0, window.innerHeight - vv.height);
+      document.documentElement.style.setProperty('--keyboard-height', `${kb}px`);
+    };
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
+  }, []);
+
   return (
-    <div className="fixed inset-0 flex bg-background">
+    <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
       {!isMobile ? (
         <div className="h-full flex-shrink-0 border-r border-border/50">
           <Sidebar {...sidebarSharedProps} />
@@ -160,7 +177,7 @@ export default function AppContent() {
         </div>
       )}
 
-      <div className={`flex min-w-0 flex-1 flex-col ${isMobile ? 'pb-mobile-nav' : ''}`}>
+      <div className="flex min-w-0 flex-1 flex-col">
         <MainContent
           selectedProject={selectedProject}
           selectedSession={selectedSession}
@@ -169,8 +186,8 @@ export default function AppContent() {
           ws={ws}
           sendMessage={sendMessage}
           latestMessage={latestMessage}
-          isConnected={isConnected}
           isMobile={isMobile}
+          onMenuClick={() => setSidebarOpen(true)}
           isLoading={isLoadingProjects}
           onInputFocusChange={setIsInputFocused}
           onSessionActive={markSessionAsActive}
@@ -184,25 +201,6 @@ export default function AppContent() {
           externalMessageUpdate={externalMessageUpdate}
         />
       </div>
-
-      {isMobile && !sidebarOpen && (
-        <div
-          className="pointer-events-none fixed top-1/2 z-40 -translate-y-1/2"
-          style={{ left: 'env(safe-area-inset-left, 0px)' }}
-        >
-          <div className="pointer-events-auto">
-            <MobileMenuButton onMenuClick={() => setSidebarOpen(true)} floating />
-          </div>
-        </div>
-      )}
-
-      {isMobile && (
-        <MobileNav
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          isInputFocused={isInputFocused}
-        />
-      )}
 
     </div>
   );

@@ -3,33 +3,18 @@
 import './load-env.js';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
+import { findAppRoot, getModuleDir } from './utils/runtime-paths.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { AppError, createNormalizedMessage } from '@/shared/utils.js';
 
-const installMode = fs.existsSync(path.join(__dirname, '..', '.git')) ? 'git' : 'npm';
 
-// ANSI color codes for terminal output
-const colors = {
-    reset: '\x1b[0m',
-    bright: '\x1b[1m',
-    cyan: '\x1b[36m',
-    green: '\x1b[32m',
-    yellow: '\x1b[33m',
-    blue: '\x1b[34m',
-    dim: '\x1b[2m',
-};
+const __dirname = getModuleDir(import.meta.url);
+// The server source runs from /server, while the compiled output runs from /dist-server/server.
+// Resolving the app root once keeps every repo-level lookup below aligned across both layouts.
+const APP_ROOT = findAppRoot(__dirname);
+const installMode = fs.existsSync(path.join(APP_ROOT, '.git')) ? 'git' : 'npm';
 
-const c = {
-    info: (text) => `${colors.cyan}${text}${colors.reset}`,
-    ok: (text) => `${colors.green}${text}${colors.reset}`,
-    warn: (text) => `${colors.yellow}${text}${colors.reset}`,
-    tip: (text) => `${colors.blue}${text}${colors.reset}`,
-    bright: (text) => `${colors.bright}${text}${colors.reset}`,
-    dim: (text) => `${colors.dim}${text}${colors.reset}`,
-};
+import { c } from './utils/colors.js';
 
 console.log('SERVER_PORT from env:', process.env.SERVER_PORT);
 
@@ -41,7 +26,6 @@ import cors from 'cors';
 import { promises as fsPromises } from 'fs';
 import { spawn } from 'child_process';
 import pty from 'node-pty';
-import fetch from 'node-fetch';
 import mime from 'mime-types';
 
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache, setProjectDirectoryCache, searchConversations } from './projects.js';
@@ -52,7 +36,6 @@ import { spawnGemini, abortGeminiSession, isGeminiSessionActive, getActiveGemini
 import sessionManager from './sessionManager.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
-import mcpRoutes from './routes/mcp.js';
 import cursorRoutes from './routes/cursor.js';
 import taskmasterRoutes from './routes/taskmaster.js';
 import mcpUtilsRoutes from './routes/mcp-utils.js';
@@ -60,13 +43,12 @@ import commandsRoutes from './routes/commands.js';
 import settingsRoutes from './routes/settings.js';
 import agentRoutes from './routes/agent.js';
 import projectsRoutes, { WORKSPACES_ROOT, validateWorkspacePath } from './routes/projects.js';
-import cliAuthRoutes from './routes/cli-auth.js';
 import userRoutes from './routes/user.js';
 import codexRoutes from './routes/codex.js';
 import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import messagesRoutes from './routes/messages.js';
-import { createNormalizedMessage } from './providers/types.js';
+import providerRoutes from './modules/providers/provider.routes.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, sessionNamesDb, applyCustomSessionNames } from './database/db.js';
 import { configureWebPush } from './services/vapid-keys.js';
@@ -309,68 +291,7 @@ const server = http.createServer(app);
 const ptySessionsMap = new Map();
 const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
-const ANSI_ESCAPE_SEQUENCE_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
-const TRAILING_URL_PUNCTUATION_REGEX = /[)\]}>.,;:!?]+$/;
-
-function stripAnsiSequences(value = '') {
-    return value.replace(ANSI_ESCAPE_SEQUENCE_REGEX, '');
-}
-
-function normalizeDetectedUrl(url) {
-    if (!url || typeof url !== 'string') return null;
-
-    const cleaned = url.trim().replace(TRAILING_URL_PUNCTUATION_REGEX, '');
-    if (!cleaned) return null;
-
-    try {
-        const parsed = new URL(cleaned);
-        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-            return null;
-        }
-        return parsed.toString();
-    } catch {
-        return null;
-    }
-}
-
-function extractUrlsFromText(value = '') {
-    const directMatches = value.match(/https?:\/\/[^\s<>"'`\\\x1b\x07]+/gi) || [];
-
-    // Handle wrapped terminal URLs split across lines by terminal width.
-    const wrappedMatches = [];
-    const continuationRegex = /^[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+$/;
-    const lines = value.split(/\r?\n/);
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim();
-        const startMatch = line.match(/https?:\/\/[^\s<>"'`\\\x1b\x07]+/i);
-        if (!startMatch) continue;
-
-        let combined = startMatch[0];
-        let j = i + 1;
-        while (j < lines.length) {
-            const continuation = lines[j].trim();
-            if (!continuation) break;
-            if (!continuationRegex.test(continuation)) break;
-            combined += continuation;
-            j++;
-        }
-
-        wrappedMatches.push(combined.replace(/\r?\n\s*/g, ''));
-    }
-
-    return Array.from(new Set([...directMatches, ...wrappedMatches]));
-}
-
-function shouldAutoOpenUrlFromOutput(value = '') {
-    const normalized = value.toLowerCase();
-    return (
-        normalized.includes('browser didn\'t open') ||
-        normalized.includes('open this url') ||
-        normalized.includes('continue in your browser') ||
-        normalized.includes('press enter to open') ||
-        normalized.includes('open_url:')
-    );
-}
+import { stripAnsiSequences, normalizeDetectedUrl, extractUrlsFromText, shouldAutoOpenUrlFromOutput } from './utils/url-detection.js';
 
 // Single WebSocket server that handles both paths
 const wss = new WebSocketServer({
@@ -446,9 +367,6 @@ app.use('/api/projects', authenticateToken, projectsRoutes);
 // Git API Routes (protected)
 app.use('/api/git', authenticateToken, gitRoutes);
 
-// MCP API Routes (protected)
-app.use('/api/mcp', authenticateToken, mcpRoutes);
-
 // Cursor API Routes (protected)
 app.use('/api/cursor', authenticateToken, cursorRoutes);
 
@@ -463,9 +381,6 @@ app.use('/api/commands', authenticateToken, commandsRoutes);
 
 // Settings API Routes (protected)
 app.use('/api/settings', authenticateToken, settingsRoutes);
-
-// CLI Authentication API Routes (protected)
-app.use('/api/cli', authenticateToken, cliAuthRoutes);
 
 // User API Routes (protected)
 app.use('/api/user', authenticateToken, userRoutes);
@@ -482,15 +397,18 @@ app.use('/api/plugins', authenticateToken, pluginsRoutes);
 // Unified session messages route (protected)
 app.use('/api/sessions', authenticateToken, messagesRoutes);
 
+// Unified provider MCP routes (protected)
+app.use('/api/providers', authenticateToken, providerRoutes);
+
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
 
 // Serve public files (like api-docs.html)
-app.use(express.static(path.join(__dirname, '../public')));
+app.use(express.static(path.join(APP_ROOT, 'public')));
 
 // Static files served after API routes
 // Add cache control: HTML files should not be cached, but assets can be cached
-app.use(express.static(path.join(__dirname, '../dist'), {
+app.use(express.static(path.join(APP_ROOT, 'dist'), {
     setHeaders: (res, filePath) => {
         if (filePath.endsWith('.html')) {
             // Prevent HTML caching to avoid service worker issues after builds
@@ -512,17 +430,24 @@ app.use(express.static(path.join(__dirname, '../dist'), {
 app.post('/api/system/update', authenticateToken, async (req, res) => {
     try {
         // Get the project root directory (parent of server directory)
-        const projectRoot = path.join(__dirname, '..');
+        const projectRoot = APP_ROOT;
 
         console.log('Starting system update from directory:', projectRoot);
 
-        // Run the update command based on install mode
-        const updateCommand = installMode === 'git'
-            ? 'git checkout main && git pull && npm install'
-            : 'npm install -g @siteboon/claude-code-ui@latest';
+        // Platform deployments use their own update workflow from the project root.
+        const updateCommand = IS_PLATFORM
+        // In platform, husky and dev dependencies are not needed
+            ? 'npm run update:platform'
+            : installMode === 'git'
+                ? 'git checkout main && git pull && npm install'
+                : 'npm install -g @cloudcli-ai/cloudcli@latest';
+
+        const updateCwd = IS_PLATFORM || installMode === 'git'
+            ? projectRoot
+            : os.homedir();
 
         const child = spawn('sh', ['-c', updateCommand], {
-            cwd: installMode === 'git' ? projectRoot : os.homedir(),
+            cwd: updateCwd,
             env: process.env
         });
 
@@ -712,11 +637,14 @@ app.put('/api/sessions/:sessionId/rename', authenticateToken, async (req, res) =
     }
 });
 
-// Delete project endpoint (force=true to delete with sessions)
+// Delete project endpoint
+// force=true to allow removal even when sessions exist
+// deleteData=true to also delete session/memory files on disk (destructive)
 app.delete('/api/projects/:projectName', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
         const force = req.query.force === 'true';
+        const deleteData = req.query.deleteData === 'true';
         const projectRoot = await extractProjectDirectory(projectName).catch(() => null);
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
@@ -727,7 +655,7 @@ app.delete('/api/projects/:projectName', authenticateToken, async (req, res) => 
             return;
         }
 
-        await deleteProject(projectName, force);
+        await deleteProject(projectName, force, deleteData);
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -758,6 +686,7 @@ app.post('/api/projects/create', authenticateToken, async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
 
 // Search conversations content (SSE streaming)
 app.get('/api/search/conversations', authenticateToken, async (req, res) => {
@@ -993,7 +922,7 @@ app.get('/api/projects/:projectName/file', authenticateToken, async (req, res) =
     }
 });
 
-// Serve binary file content endpoint (for images, etc.)
+// Serve raw file bytes for previews and downloads.
 app.get('/api/projects/:projectName/files/content', authenticateToken, async (req, res) => {
     try {
         const { projectName } = req.params;
@@ -1010,6 +939,9 @@ app.get('/api/projects/:projectName/files/content', authenticateToken, async (re
             return res.status(404).json({ error: 'Project not found' });
         }
 
+        // Match the text reader endpoint so callers can pass either project-relative
+        // or absolute paths without changing how the bytes are served, while still
+        // enforcing YpBot project permission scoping.
         const validation = await validatePathInProject(projectRoot, filePath);
         if (!validation.valid) {
             return res.status(403).json({ error: validation.error });
@@ -1699,7 +1631,7 @@ wss.on('connection', (ws, request) => {
 /**
  * WebSocket Writer - Wrapper for WebSocket to match SSEStreamWriter interface
  *
- * Provider files use `createNormalizedMessage()` from `providers/types.js` and
+ * Provider files use `createNormalizedMessage()` from `shared/utils.js` and
  * adapter `normalizeMessage()` to produce unified NormalizedMessage events.
  * The writer simply serialises and sends.
  */
@@ -2294,155 +2226,6 @@ function handleShellConnection(ws) {
         console.error('[ERROR] Shell WebSocket error:', error);
     });
 }
-// Audio transcription endpoint
-app.post('/api/transcribe', authenticateToken, async (req, res) => {
-    try {
-        const multer = (await import('multer')).default;
-        const upload = multer({ storage: multer.memoryStorage() });
-
-        // Handle multipart form data
-        upload.single('audio')(req, res, async (err) => {
-            if (err) {
-                return res.status(400).json({ error: 'Failed to process audio file' });
-            }
-
-            if (!req.file) {
-                return res.status(400).json({ error: 'No audio file provided' });
-            }
-
-            const apiKey = process.env.OPENAI_API_KEY;
-            if (!apiKey) {
-                return res.status(500).json({ error: 'OpenAI API key not configured. Please set OPENAI_API_KEY in server environment.' });
-            }
-
-            try {
-                // Create form data for OpenAI
-                const FormData = (await import('form-data')).default;
-                const formData = new FormData();
-                formData.append('file', req.file.buffer, {
-                    filename: req.file.originalname,
-                    contentType: req.file.mimetype
-                });
-                formData.append('model', 'whisper-1');
-                formData.append('response_format', 'json');
-                formData.append('language', 'en');
-
-                // Make request to OpenAI
-                const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-                    method: 'POST',
-                    headers: {
-                        'Authorization': `Bearer ${apiKey}`,
-                        ...formData.getHeaders()
-                    },
-                    body: formData
-                });
-
-                if (!response.ok) {
-                    const errorData = await response.json().catch(() => ({}));
-                    throw new Error(errorData.error?.message || `Whisper API error: ${response.status}`);
-                }
-
-                const data = await response.json();
-                let transcribedText = data.text || '';
-
-                // Check if enhancement mode is enabled
-                const mode = req.body.mode || 'default';
-
-                // If no transcribed text, return empty
-                if (!transcribedText) {
-                    return res.json({ text: '' });
-                }
-
-                // If default mode, return transcribed text without enhancement
-                if (mode === 'default') {
-                    return res.json({ text: transcribedText });
-                }
-
-                // Handle different enhancement modes
-                try {
-                    const OpenAI = (await import('openai')).default;
-                    const openai = new OpenAI({ apiKey });
-
-                    let prompt, systemMessage, temperature = 0.7, maxTokens = 800;
-
-                    switch (mode) {
-                        case 'prompt':
-                            systemMessage = 'You are an expert prompt engineer who creates clear, detailed, and effective prompts.';
-                            prompt = `You are an expert prompt engineer. Transform the following rough instruction into a clear, detailed, and context-aware AI prompt.
-
-Your enhanced prompt should:
-1. Be specific and unambiguous
-2. Include relevant context and constraints
-3. Specify the desired output format
-4. Use clear, actionable language
-5. Include examples where helpful
-6. Consider edge cases and potential ambiguities
-
-Transform this rough instruction into a well-crafted prompt:
-"${transcribedText}"
-
-Enhanced prompt:`;
-                            break;
-
-                        case 'vibe':
-                        case 'instructions':
-                        case 'architect':
-                            systemMessage = 'You are a helpful assistant that formats ideas into clear, actionable instructions for AI agents.';
-                            temperature = 0.5; // Lower temperature for more controlled output
-                            prompt = `Transform the following idea into clear, well-structured instructions that an AI agent can easily understand and execute.
-
-IMPORTANT RULES:
-- Format as clear, step-by-step instructions
-- Add reasonable implementation details based on common patterns
-- Only include details directly related to what was asked
-- Do NOT add features or functionality not mentioned
-- Keep the original intent and scope intact
-- Use clear, actionable language an agent can follow
-
-Transform this idea into agent-friendly instructions:
-"${transcribedText}"
-
-Agent instructions:`;
-                            break;
-
-                        default:
-                            // No enhancement needed
-                            break;
-                    }
-
-                    // Only make GPT call if we have a prompt
-                    if (prompt) {
-                        const completion = await openai.chat.completions.create({
-                            model: 'gpt-4o-mini',
-                            messages: [
-                                { role: 'system', content: systemMessage },
-                                { role: 'user', content: prompt }
-                            ],
-                            temperature: temperature,
-                            max_tokens: maxTokens
-                        });
-
-                        transcribedText = completion.choices[0].message.content || transcribedText;
-                    }
-
-                } catch (gptError) {
-                    console.error('GPT processing error:', gptError);
-                    // Fall back to original transcription if GPT fails
-                }
-
-                res.json({ text: transcribedText });
-
-            } catch (error) {
-                console.error('Transcription error:', error);
-                res.status(500).json({ error: error.message });
-            }
-        });
-    } catch (error) {
-        console.error('Endpoint error:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
 // Image upload endpoint
 app.post('/api/projects/:projectName/upload-images', authenticateToken, async (req, res) => {
     try {
@@ -2732,7 +2515,7 @@ app.get('*', (req, res) => {
 
     // Only serve index.html for HTML routes, not for static assets
     // Static assets should already be handled by express.static middleware above
-    const indexPath = path.join(__dirname, '../dist/index.html');
+    const indexPath = path.join(APP_ROOT, 'dist', 'index.html');
 
     // Check if dist/index.html exists (production build available)
     if (fs.existsSync(indexPath)) {
@@ -2746,6 +2529,30 @@ app.get('*', (req, res) => {
         const redirectHost = getConnectableHost(req.hostname);
         res.redirect(`${req.protocol}://${redirectHost}:${VITE_PORT}`);
     }
+});
+
+// global error middleware must be last
+app.use((err, req, res, next) => {
+  if (err instanceof AppError) {
+    return res.status(err.statusCode).json({
+      success: false,
+      error: {
+        code: err.code,
+        message: err.message,
+        details: err.details,
+      },
+    });
+  }
+
+  console.error(err);
+
+  return res.status(500).json({
+    success: false,
+    error: {
+      code: 'INTERNAL_ERROR',
+      message: 'Internal server error',
+    },
+  });
 });
 
 // Helper function to convert permissions to rwx format
@@ -2857,7 +2664,7 @@ async function startServer() {
         configureWebPush();
 
         // Check if running in production mode (dist folder exists)
-        const distIndexPath = path.join(__dirname, '../dist/index.html');
+        const distIndexPath = path.join(APP_ROOT, 'dist', 'index.html');
         const isProduction = fs.existsSync(distIndexPath);
 
         // Log Claude implementation mode
@@ -2871,11 +2678,11 @@ async function startServer() {
         console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
    
         server.listen(SERVER_PORT, HOST, async () => {
-            const appInstallPath = path.join(__dirname, '..');
+            const appInstallPath = APP_ROOT;
 
             console.log('');
             console.log(c.dim('═'.repeat(63)));
-            console.log(`  ${c.bright('Claude Code UI Server - Ready')}`);
+            console.log(`  ${c.bright('CloudCLI Server - Ready')}`);
             console.log(c.dim('═'.repeat(63)));
             console.log('');
             console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);

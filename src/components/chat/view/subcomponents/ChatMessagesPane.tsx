@@ -2,11 +2,10 @@ import { useTranslation } from 'react-i18next';
 import { useCallback, useRef } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 import type { ChatMessage } from '../../types/types';
-import type { Project, ProjectSession, SessionProvider } from '../../../../types/app';
+import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
 import MessageComponent from './MessageComponent';
 import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
-import AssistantThinkingIndicator from './AssistantThinkingIndicator';
 
 interface ChatMessagesPaneProps {
   scrollContainerRef: RefObject<HTMLDivElement>;
@@ -16,8 +15,8 @@ interface ChatMessagesPaneProps {
   chatMessages: ChatMessage[];
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
-  provider: SessionProvider;
-  setProvider: (provider: SessionProvider) => void;
+  provider: LLMProvider;
+  setProvider: (provider: LLMProvider) => void;
   textareaRef: RefObject<HTMLTextAreaElement>;
   claudeModel: string;
   setClaudeModel: (model: string) => void;
@@ -51,10 +50,6 @@ interface ChatMessagesPaneProps {
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
-  isLoading: boolean;
-  isInputFocused?: boolean;
-  claudeStatus?: { text?: string; tokens?: number; can_interrupt?: boolean } | null;
-  onAbortSession?: () => void;
 }
 
 export default function ChatMessagesPane({
@@ -100,10 +95,6 @@ export default function ChatMessagesPane({
   showRawParameters,
   showThinking,
   selectedProject,
-  isLoading,
-  isInputFocused,
-  claudeStatus,
-  onAbortSession,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
@@ -139,7 +130,7 @@ export default function ChatMessagesPane({
       ref={scrollContainerRef}
       onWheel={onWheel}
       onTouchMove={onTouchMove}
-      className={`relative flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-0 py-3 sm:space-y-4 sm:p-4 ${isInputFocused ? 'max-sm:pb-[160px]' : ''}`}
+      className="relative flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-0 py-3 sm:space-y-4 sm:p-4"
     >
       {isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
@@ -267,8 +258,7 @@ export default function ChatMessagesPane({
           })}
         </>
       )}
-
-      {isLoading && <AssistantThinkingIndicator selectedProvider={provider} status={claudeStatus} onAbort={onAbortSession} />}
     </div>
   );
 }
+

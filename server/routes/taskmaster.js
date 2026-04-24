@@ -13,9 +13,6 @@ import fs from 'fs';
 import path from 'path';
 import { promises as fsPromises } from 'fs';
 import { spawn } from 'child_process';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import os from 'os';
 import { extractProjectDirectory } from '../projects.js';
 import { detectTaskMasterMCPServer } from '../utils/mcp-detector.js';
 import { broadcastTaskMasterProjectUpdate, broadcastTaskMasterTasksUpdate } from '../utils/taskmaster-websocket.js';
@@ -24,9 +21,6 @@ import {
     hasProjectAccess,
     resolvePathForPermissionCheck,
 } from '../utils/projectPermissions.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 
 const router = express.Router();
 
@@ -127,140 +121,6 @@ async function checkTaskMasterInstallation() {
         });
     });
 }
-
-/**
- * Detect .taskmaster folder presence in a given project directory
- * @param {string} projectPath - Absolute path to project directory
- * @returns {Promise<Object>} Detection result with status and metadata
- */
-async function detectTaskMasterFolder(projectPath) {
-    try {
-        const taskMasterPath = path.join(projectPath, '.taskmaster');
-        
-        // Check if .taskmaster directory exists
-        try {
-            const stats = await fsPromises.stat(taskMasterPath);
-            if (!stats.isDirectory()) {
-                return {
-                    hasTaskmaster: false,
-                    reason: '.taskmaster exists but is not a directory'
-                };
-            }
-        } catch (error) {
-            if (error.code === 'ENOENT') {
-                return {
-                    hasTaskmaster: false,
-                    reason: '.taskmaster directory not found'
-                };
-            }
-            throw error;
-        }
-
-        // Check for key TaskMaster files
-        const keyFiles = [
-            'tasks/tasks.json',
-            'config.json'
-        ];
-        
-        const fileStatus = {};
-        let hasEssentialFiles = true;
-
-        for (const file of keyFiles) {
-            const filePath = path.join(taskMasterPath, file);
-            try {
-                await fsPromises.access(filePath, fs.constants.R_OK);
-                fileStatus[file] = true;
-            } catch (error) {
-                fileStatus[file] = false;
-                if (file === 'tasks/tasks.json') {
-                    hasEssentialFiles = false;
-                }
-            }
-        }
-
-        // Parse tasks.json if it exists for metadata
-        let taskMetadata = null;
-        if (fileStatus['tasks/tasks.json']) {
-            try {
-                const tasksPath = path.join(taskMasterPath, 'tasks/tasks.json');
-                const tasksContent = await fsPromises.readFile(tasksPath, 'utf8');
-                const tasksData = JSON.parse(tasksContent);
-                
-                // Handle both tagged and legacy formats
-                let tasks = [];
-                if (tasksData.tasks) {
-                    // Legacy format
-                    tasks = tasksData.tasks;
-                } else {
-                    // Tagged format - get tasks from all tags
-                    Object.values(tasksData).forEach(tagData => {
-                        if (tagData.tasks) {
-                            tasks = tasks.concat(tagData.tasks);
-                        }
-                    });
-                }
-
-                // Calculate task statistics
-                const stats = tasks.reduce((acc, task) => {
-                    acc.total++;
-                    acc[task.status] = (acc[task.status] || 0) + 1;
-                    
-                    // Count subtasks
-                    if (task.subtasks) {
-                        task.subtasks.forEach(subtask => {
-                            acc.subtotalTasks++;
-                            acc.subtasks = acc.subtasks || {};
-                            acc.subtasks[subtask.status] = (acc.subtasks[subtask.status] || 0) + 1;
-                        });
-                    }
-                    
-                    return acc;
-                }, { 
-                    total: 0, 
-                    subtotalTasks: 0,
-                    pending: 0, 
-                    'in-progress': 0, 
-                    done: 0, 
-                    review: 0,
-                    deferred: 0,
-                    cancelled: 0,
-                    subtasks: {}
-                });
-
-                taskMetadata = {
-                    taskCount: stats.total,
-                    subtaskCount: stats.subtotalTasks,
-                    completed: stats.done || 0,
-                    pending: stats.pending || 0,
-                    inProgress: stats['in-progress'] || 0,
-                    review: stats.review || 0,
-                    completionPercentage: stats.total > 0 ? Math.round((stats.done / stats.total) * 100) : 0,
-                    lastModified: (await fsPromises.stat(tasksPath)).mtime.toISOString()
-                };
-            } catch (parseError) {
-                console.warn('Failed to parse tasks.json:', parseError.message);
-                taskMetadata = { error: 'Failed to parse tasks.json' };
-            }
-        }
-
-        return {
-            hasTaskmaster: true,
-            hasEssentialFiles,
-            files: fileStatus,
-            metadata: taskMetadata,
-            path: taskMasterPath
-        };
-
-    } catch (error) {
-        console.error('Error detecting TaskMaster folder:', error);
-        return {
-            hasTaskmaster: false,
-            reason: `Error checking directory: ${error.message}`
-        };
-    }
-}
-
-// MCP detection is now handled by the centralized utility
 
 // API Routes
 
@@ -592,6 +452,7 @@ router.get('/next/:projectName', async (req, res) => {
 });
 
 /**
+
  * GET /api/taskmaster/tasks/:projectName
  * Load actual tasks from .taskmaster/tasks/tasks.json
  */
@@ -927,66 +788,6 @@ router.get('/prd/:projectName/:fileName', async (req, res) => {
         console.error('PRD read error:', error);
         res.status(500).json({
             error: 'Failed to read PRD file',
-            message: error.message
-        });
-    }
-});
-
-/**
- * DELETE /api/taskmaster/prd/:projectName/:fileName
- * Delete a specific PRD file
- */
-router.delete('/prd/:projectName/:fileName', async (req, res) => {
-    try {
-        const { projectName, fileName } = req.params;
-        
-        // Get project path
-        let projectPath;
-        try {
-            projectPath = await extractProjectDirectory(projectName);
-        } catch (error) {
-            return res.status(404).json({
-                error: 'Project not found',
-                message: `Project "${projectName}" does not exist`
-            });
-        }
-
-        const filePath = path.join(projectPath, '.taskmaster', 'docs', fileName);
-        
-        // Check if file exists
-        try {
-            await fsPromises.access(filePath, fs.constants.F_OK);
-        } catch (error) {
-            return res.status(404).json({
-                error: 'PRD file not found',
-                message: `File "${fileName}" does not exist`
-            });
-        }
-
-        // Delete the file
-        try {
-            await fsPromises.unlink(filePath);
-
-            res.json({
-                projectName,
-                projectPath,
-                fileName,
-                message: 'PRD file deleted successfully',
-                timestamp: new Date().toISOString()
-            });
-
-        } catch (deleteError) {
-            console.error('Failed to delete PRD file:', deleteError);
-            return res.status(500).json({
-                error: 'Failed to delete PRD file',
-                message: deleteError.message
-            });
-        }
-
-    } catch (error) {
-        console.error('PRD delete error:', error);
-        res.status(500).json({
-            error: 'Failed to delete PRD file',
             message: error.message
         });
     }
