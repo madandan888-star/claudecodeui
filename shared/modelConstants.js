@@ -59,6 +59,7 @@ export const CURSOR_MODELS = {
  */
 export const CODEX_MODELS = {
   OPTIONS: [
+    { value: "gpt-5.5", label: "GPT-5.5" },
     { value: "gpt-5.4", label: "GPT-5.4" },
     { value: "gpt-5.4-mini", label: "GPT-5.4 mini" },
     { value: "gpt-5.3-codex", label: "GPT-5.3 Codex" },
@@ -69,7 +70,7 @@ export const CODEX_MODELS = {
     { value: "o4-mini", label: "O4-mini" },
   ],
 
-  DEFAULT: "gpt-5.4",
+  DEFAULT: "gpt-5.5",
 };
 
 /**
@@ -96,6 +97,10 @@ export const GEMINI_MODELS = {
 
 export function getCodexContextWindow(model) {
   const normalizedModel = String(model || '').trim().toLowerCase();
+
+  if (normalizedModel === 'gpt-5.5') {
+    return 272_000;
+  }
 
   if (normalizedModel === 'gpt-5.4' || normalizedModel === 'gpt-5.4-codex') {
     return 1_000_000;
